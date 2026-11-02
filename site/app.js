@@ -325,7 +325,9 @@
       get("meta.json"), get("series.json"), get("regions.geojson"), get("departements.geojson"),
     ]);
     D = { meta, series, regions, deps };
-    $("maj").textContent = `Données jusqu'au ${meta.data_until.replace("T", " à ")} · ${meta.n_stations.toLocaleString("fr-FR")} stations · mise à jour toutes les heures`;
+    // stations actives = prix gazole déclaré dans les 30 derniers jours (dernier point de la série France)
+    const nFR = series["48h"].FR.n, nActive = nFR[nFR.length - 1];
+    $("maj").textContent = `Données jusqu'au ${meta.data_until.replace("T", " à ")} · ${nActive.toLocaleString("fr-FR")} stations actives · mise à jour toutes les heures`;
     document.querySelectorAll("[data-k=stale_days]").forEach((e) => (e.textContent = meta.stale_days));
     document.querySelectorAll("[data-k=price_range]").forEach((e) => (e.textContent = `${meta.price_range[0]} à ${meta.price_range[1]}`));
   }
