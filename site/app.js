@@ -9,7 +9,11 @@
   // Échelle divergente centrée sur 0 : dégradé de vert si le prix baisse, de rouge s'il monte
   const NEUTRAL = [238, 238, 232], GREEN = [0, 104, 55], RED = [165, 0, 38];
 
-  const state = { period: "7j", scale: "FR", indic: "mean", sel: { kind: "FR", code: "FR" } };
+  // Retrait temporaire du prix moyen (demande du 02/11/2026) : seul le prix médian est affiché.
+  // Repasser à true pour réafficher la courbe moyenne, sa ligne du tableau et le sélecteur moyen/médian.
+  const SHOW_MEAN = false;
+
+  const state = { period: "7j", scale: "FR", indic: SHOW_MEAN ? "mean" : "median", sel: { kind: "FR", code: "FR" } };
   let D = {}; // données chargées
   let map, layer, chart, renderer;
   const stationCache = {};
@@ -227,7 +231,11 @@
       borderWidth: 2, pointRadius: 0, pointHoverRadius: 4, tension: 0, spanGaps: true,
       borderDash: !isStation && key !== state.indic ? [5, 4] : [],
     });
-    const datasets = isStation ? [ds("mean", css("--mean"))] : [ds("mean", css("--mean")), ds("median", css("--median"))];
+    const datasets = isStation
+      ? [ds("mean", css("--mean"))]
+      : SHOW_MEAN
+        ? [ds("mean", css("--mean")), ds("median", css("--median"))]
+        : [ds("median", css("--median"))];
     const ink2 = css("--ink-2"), line = css("--line");
     if (!chart) {
       chart = new Chart($("chart"), {
@@ -253,7 +261,7 @@
     }
 
     // Tableau de synthèse
-    const rows = (isStation ? ["mean"] : ["mean", "median"]).map((k) => {
+    const rows = (isStation ? ["mean"] : SHOW_MEAN ? ["mean", "median"] : ["median"]).map((k) => {
       const a = s ? s[k] : [];
       const vals = a.filter((x) => x != null);
       const first = a.find((x) => x != null), last = [...a].reverse().find((x) => x != null);
@@ -336,6 +344,7 @@
     segmented($("ctl-period"), PERIOD_OPTS, "period");
     segmented($("ctl-scale"), SCALE_OPTS, "scale");
     segmented($("ctl-indic"), Object.entries(INDICS), "indic");
+    if (!SHOW_MEAN) $("ctl-indic").closest(".ctl").style.display = "none";
     $("sel-reset").addEventListener("click", () => { state.sel = { kind: "FR", code: "FR" }; render(); });
     initMap();
     try {

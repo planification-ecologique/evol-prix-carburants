@@ -41,8 +41,8 @@ h2 { font-size: 17px; margin: 0; }
 main { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 16px; }
 @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
 .card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
-.map-card { padding: 0; overflow: hidden; position: relative; }
-#map { height: 620px; background: var(--bg); }
+.map-card { padding: 0; overflow: hidden; position: relative; display: flex; flex-direction: column; }
+#map { flex: 1; min-height: 620px; background: var(--bg); }
 @media (max-width: 900px) { #map { height: 460px; } }
 .map-loading {
   position: absolute; inset: 0; z-index: 600; display: flex; align-items: center; justify-content: center;
