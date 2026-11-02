@@ -145,9 +145,14 @@ class Collector:
         self.rupt: dict[tuple[int, int], list] = {}
         # fermetures : (station, type, début) -> fin | None
         self.ferm: dict[tuple[int, str, int], int | None] = {}
+        # stations qui affichent un prix gazole dans le flux instantané (état officiel actuel)
+        self.priced_now: set[int] = set()
+        self.snapshot_read = False
 
-    def read(self, stream, since: datetime, label: str, current: bool = False) -> None:
-        """current=True pour le flux instantané avec ruptures : ses ruptures sont en cours maintenant."""
+    def read(self, stream, since: datetime, label: str, current: bool = False, snapshot: bool = False) -> None:
+        """current=True pour le flux instantané avec ruptures : ses ruptures sont en cours maintenant.
+        snapshot=True pour les flux instantanés : on note les stations qui affichent un prix gazole."""
+        self.snapshot_read |= snapshot
         n_before = len(self.ts)
         since_m = minutes(since)
         for _, el in ET.iterparse(stream, events=("end",)):
@@ -175,6 +180,8 @@ class Collector:
                 dt, v = parse_maj(p.get("maj")), parse_price(p.get("valeur"))
                 if dt is None or v is None:
                     continue
+                if snapshot:
+                    self.priced_now.add(pid)
                 t = minutes(dt)
                 if t < since_m:
                     continue
@@ -260,7 +267,8 @@ def exclusion_intervals(col: Collector, sid, ts, stations, now_m: int):
 
     Une rupture ou une fermeture sans date de fin prend fin au premier prix publié ensuite
     (une station qui publie un prix vend à nouveau du gazole), sauf rupture encore en cours
-    d'après le flux instantané.
+    d'après le flux instantané. Au dernier point, une station qui n'affiche pas de prix gazole
+    dans le flux instantané n'est pas comptée, comme sur l'export officiel.
     """
     big = np.int64(1) << 32
     keys = sid * big + ts
@@ -290,6 +298,15 @@ def exclusion_intervals(col: Collector, sid, ts, stations, now_m: int):
         if fin is None:
             fin = next_price(pid, s)
         add(pid, s, fin, f"fermeture {typ or '?'}")
+    if col.snapshot_read:
+        covered = {int(stations[r]) for r, s, e in zip(rows, starts, ends) if s <= now_m < e}
+        last = np.searchsorted(sid, stations, side="right") - 1
+        for i, pid in enumerate(stations.tolist()):
+            j = int(last[i])
+            if j < 0 or int(sid[j]) != pid or now_m - int(ts[j]) > STALE_DAYS * 24 * 60:
+                continue  # pas de prix récent : déjà hors du calcul
+            if pid not in col.priced_now and pid not in covered:
+                add(pid, now_m, None, "absente du flux instantané")
     return (np.asarray(rows, dtype=np.int64), np.asarray(starts, dtype=np.int64), np.asarray(ends, dtype=np.int64)), stats
 
 
@@ -389,9 +406,11 @@ def main() -> None:
     print("Lecture des flux…", flush=True)
     sources = []  # (chemin, en cours) dans l'ordre de lecture, pour l'audit
     if args.local_xml:
+        # tests : un fichier dont le nom contient « instantane » joue le rôle du flux instantané
         for f in args.local_xml:
+            name = Path(f).name
             with open(f, "rb") as fh:
-                col.read(fh, HISTORY_START, f)
+                col.read(fh, HISTORY_START, f, current="instantane_ruptures" in name, snapshot="instantane" in name)
     else:
         # Archives annuelles (immuables, mises en cache), puis année en cours, puis jours récents,
         # puis flux instantané (prix, puis ruptures en cours).
@@ -407,7 +426,7 @@ def main() -> None:
                 print(f"  {name} indisponible : {e}")
                 continue
             current = name == "instantane_ruptures"
-            col.read(xml_from_zip(data), HISTORY_START, name, current=current)
+            col.read(xml_from_zip(data), HISTORY_START, name, current=current, snapshot=name.startswith("instantane"))
             sources.append(name)
 
     sid, ts, pr = col.arrays()

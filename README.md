@@ -20,6 +20,7 @@ Les hypothèses de calcul sont détaillées en bas de la page.
 - Prix hors de la plage 1 à 3 €/L écartés ; doublons (même station, même horodatage) supprimés.
 - Fautes de saisie écartées : saut d'au moins 0,30 € annulé à 0,05 € près dans les 72 heures (par exemple 2,25 € → 1,25 € → 2,25 €), et prix inférieur de plus de 0,50 € à la médiane nationale du jour. La station garde son prix valide précédent.
 - Ruptures de gazole et fermetures : la station n'est pas comptée pendant ces périodes (balises `rupture` et `fermeture` des flux, et ruptures en cours du flux instantané). Sans date de fin, la période s'arrête au prix suivant publié par la station.
+- Dernier point : seules les stations qui affichent un prix gazole dans le flux instantané sont comptées (même périmètre que l'export officiel de data.economie.gouv.fr).
 - Stations sans coordonnées valides : comptées dans les statistiques, absentes de la carte.
 
 ## Audit de la qualité des données

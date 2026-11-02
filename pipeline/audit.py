@@ -49,12 +49,14 @@ INF = 1 << 40  # même convention que build.FAR_FUTURE pour une exclusion sans f
 
 # Prix moyens hebdomadaires du gazole publiés par le ministère de la Transition écologique (DGEC),
 # en €/L TTC : prix relevés le vendredi, pondérés par les volumes des réseaux de distribution.
-# Sources : note de la DGEC du 28 août 2026 (5 juin → 28 août) ; note du 5 octobre 2026, citée par Kelwatt.
+# Sources : note de la DGEC du 28 août 2026 (5 juin → 28 août) ; note du 5 octobre 2026, citée par Kelwatt
+# (18 septembre → 2 octobre) ; note du 23 octobre 2026, citée par Selectra (16 et 23 octobre).
 DGEC = {
     "2026-06-05": 2.0144, "2026-06-12": 1.9953, "2026-06-19": 1.8898, "2026-06-26": 1.8691,
     "2026-07-03": 1.8630, "2026-07-10": 1.9479, "2026-07-17": 2.0664, "2026-07-24": 2.1685,
     "2026-07-31": 2.2158, "2026-08-07": 2.1690, "2026-08-14": 2.1993, "2026-08-21": 2.2312,
     "2026-08-28": 2.2085, "2026-09-18": 2.383, "2026-09-25": 2.371, "2026-10-02": 2.356,
+    "2026-10-16": 2.3458, "2026-10-23": 2.3515,
 }
 
 LINES: list[str] = []
@@ -78,6 +80,11 @@ def fr(x, nd=3, unit=" €"):
     if x is None or (isinstance(x, float) and math.isnan(x)):
         return "–"
     return f"{x:.{nd}f}".replace(".", ",") + unit
+
+
+def sg(x, nd=3):
+    """Écart signé : « +0,020 € » ou « −0,005 € »."""
+    return "–" if x is None else ("+" if x >= 0 else "−") + fr(abs(x), nd)
 
 
 def pct(a, b):
@@ -160,9 +167,12 @@ class Raw:
         self.fuel_names = Counter()
         self.rupt = []  # (station, début, fin | None, type, en cours d'après le flux instantané)
         self.ferm = []  # (station, type, début, fin | None)
+        self.priced_now = set()  # stations affichant un prix gazole dans le flux instantané
+        self.snapshot_read = False
 
-    def read(self, stream, label, current=False):
+    def read(self, stream, label, current=False, snapshot=False):
         s = self.src[label] = Counter()
+        self.snapshot_read |= snapshot
         for _, el in ET.iterparse(stream, events=("end",)):
             if el.tag != "pdv":
                 continue
@@ -198,6 +208,8 @@ class Raw:
                     s[k] += 1
                     self.examples[k].append((label, pid, pr.get("maj"), pr.get("valeur")))
                     continue
+                if snapshot:
+                    self.priced_now.add(pid)
                 t = mins(d)
                 if t < self.since_m:
                     s["avant"] += 1
@@ -315,6 +327,12 @@ def build_intervals(R, clean, station_dep, now_m):
             e = nx if nx is not None else INF
         if e > d:
             out[pid].append((d, e, f"fermeture {typ or '?'}"))
+    if R.snapshot_read:
+        covered = {pid for pid, lst in out.items() for s, e, _ in lst if s <= now_m < e}
+        for pid in station_dep:
+            evs = clean.get(pid)
+            if evs and now_m - evs[-1][0] <= STALE and pid not in R.priced_now and pid not in covered:
+                out[pid].append((now_m, INF, "absente du flux instantané"))
     return out
 
 
@@ -532,9 +550,34 @@ def s_fautes(C):
         m = R.meta.get(pid, {})
         p(f"  - {pid} ({m.get('cp')} {m.get('ville')}) : {fr(v / 1000)} le {ts_txt(t)} (médiane du jour {fr(ref)})")
     # contrôles résiduels après nettoyage
-    resid = sum(len(find_spikes(evs)) for evs in C.clean.values())
-    big = sum(1 for evs in C.clean.values() for k in range(1, len(evs)) if abs(evs[k][1] - evs[k - 1][1]) >= 500)
-    p(f"- Après nettoyage : allers-retours restants : {resid} ; changements d'au moins 0,50 € d'un coup : {big}.")
+    resid_list = [(pid, k) for pid, evs in C.clean.items() for k in find_spikes(evs)]
+    resid = len(resid_list)
+    def ctx(pid, k, a=2, b=2):
+        evs = C.clean[pid]
+        return " → ".join(f"{fr(v / 1000)} ({ts_txt(t)})" for t, v in evs[max(0, k - a):k + b + 1])
+    p(f"- Après nettoyage, allers-retours restants : {resid}.")
+    for pid, k in resid_list[:6]:
+        m = R.meta.get(pid, {})
+        p(f"  - {pid} ({m.get('cp')} {m.get('ville')}) : {ctx(pid, k)}")
+    bigs = Counter()
+    ex_big = defaultdict(list)
+    for pid, evs in C.clean.items():
+        for k in range(1, len(evs)):
+            if abs(evs[k][1] - evs[k - 1][1]) < 500:
+                continue
+            back = next((j for j in range(k + 1, min(len(evs), k + 8)) if abs(evs[j][1] - evs[k - 1][1]) <= 50), None)
+            gap = (evs[k][0] - evs[k - 1][0]) / DAY
+            if back is None:
+                lab = "durable, après plus de 30 jours sans mise à jour" if gap > 30 else "durable"
+            else:
+                lab = "annulé en moins de 7 jours" if evs[back][0] - evs[k][0] <= 7 * DAY else "annulé après plus de 7 jours"
+            bigs[lab] += 1
+            ex_big[lab].append((evs[k][0], pid, k))
+    p(f"- Après nettoyage, changements d'au moins 0,50 € d'un coup : {sum(bigs.values())} {dict(bigs)}.")
+    for lab, lst in ex_big.items():
+        for _t, pid, k in sorted(lst, reverse=True)[:4]:
+            m = R.meta.get(pid, {})
+            p(f"  - {lab} : {pid} ({m.get('cp')} {m.get('ville')}, {'autoroute' if m.get('pop') == 'A' else 'route'}) : {ctx(pid, k, 1, 2)}")
     pts = C.meta["periods"]["fev26"]["points"]
     med = C.naive["fev26"]["FR"]["median"]
     pop = [R.meta.get(pid, {}).get("pop", "") for pid in C.st_ids]
@@ -552,6 +595,13 @@ def s_fautes(C):
             if dv > 0.5:
                 cnt[("> +0,50", lab)] += 1
     p(f"- Après nettoyage, écarts à la médiane nationale (stations × jours, depuis février 2026) : {dict(cnt)}.")
+    hi = Counter()
+    for k, row in enumerate(C.vals["fev26"]):
+        for i, v in enumerate(row):
+            if v is not None and pop[i] != "A" and v / 1000 - med[k] > 0.5:
+                hi[i] += 1
+    p("- Stations hors autoroute le plus souvent à plus de 0,50 € au-dessus de la médiane (jours, prix au dernier point) : "
+      + "; ".join(f"{C.st_ids[i]} {R.meta.get(C.st_ids[i], {}).get('ville')} {n} j {fr(None if C.vals['fev26'][-1][i] is None else C.vals['fev26'][-1][i] / 1000)}" for i, n in hi.most_common(10)))
     check(cnt[("< −0,50", "route")] + cnt[("< −0,50", "autoroute")] == 0 and resid == 0,
           f"Après nettoyage : {resid} aller-retour restant et {cnt[('< −0,50', 'route')] + cnt[('< −0,50', 'autoroute')]} prix à plus de 0,50 € sous la médiane nationale.")
     last = C.vals["fev26"][-1]
@@ -584,9 +634,19 @@ def s_impact(C):
             dm = np.nanmax(np.abs(md - ref[0]))
             da = np.nanmax(np.abs(mn - ref[1]))
             p(f"| {per} | {lab} | {nf(int(n[-1]))} | {fr(float(md[-1]))} | {fr(float(mn[-1]))} | {fr(float(dm))} | {fr(float(da))} |")
+            if lab == "brut" and per in ("fev26", "2025"):
+                C.notes.append(f"{per} : écart max. médiane le {C.meta['periods'][per]['points'][int(np.nanargmax(np.abs(md - ref[0])))]}, "
+                               f"moyenne le {C.meta['periods'][per]['points'][int(np.nanargmax(np.abs(mn - ref[1])))]}")
+        if per == "fev26":
+            nt, nr = res["sans fautes de saisie"][2], ref[2]
+            top = np.argsort(-(nt - nr))[:6]
+            C.notes.append("jours avec le plus de stations exclues (rupture, fermeture) : " + ", ".join(
+                f"{C.meta['periods'][per]['points'][int(i)]} {int(nt[i] - nr[i])} (médiane {fr(float(res['sans fautes de saisie'][0][i]))} → {fr(float(ref[0][i]))}, moyenne {fr(float(res['sans fautes de saisie'][1][i]))} → {fr(float(ref[1][i]))})" for i in top))
         if per == "fev26":
             C.impact = {k: (float(np.nanmax(np.abs(v[0] - ref[0]))), float(np.nanmax(np.abs(v[1] - ref[1]))), float(np.mean(v[2] - ref[2]))) for k, v in res.items()}
     p()
+    for note in C.notes:
+        p(f"- {note}")
     b, t = C.impact["brut"], C.impact["sans fautes de saisie"]
     p(f"- Depuis février 2026, le nettoyage complet déplace la médiane France d'au plus {fr(b[0])} et la moyenne d'au plus {fr(b[1])} ; "
       f"les ruptures et fermetures retirent en moyenne {t[2]:.0f} stations par jour.")
@@ -616,6 +676,38 @@ def s_ruptures(C):
                 n_in[k] += n
                 st_in[k].add(pid)
     p(f"- Prix publiés pendant une rupture ou une fermeture (incohérence des flux, la période d'exclusion prime) : {dict(n_in)} prix, stations concernées : { {k: len(v) for k, v in st_in.items()} }.")
+    shown = Counter()
+    for pid, lst in C.intervals.items():
+        tl = C.full.t.get(pid, [])
+        for s, e, k in lst:
+            i, j = bisect_right(tl, s), bisect_right(tl, e - 1)
+            if j > i and shown[k] < 3:
+                shown[k] += 1
+                p(f"  - {k} : {pid} ({R.meta.get(pid, {}).get('cp')} {R.meta.get(pid, {}).get('ville')}) du {ts_txt(s)} au {ts_txt(e)}, {j - i} prix publiés entre le {ts_txt(tl[i])} et le {ts_txt(tl[j - 1])}")
+    # règle alternative : un prix publié met fin à la rupture ou à la fermeture
+    alt = defaultdict(list)
+    for pid, lst in C.intervals.items():
+        tl = C.full.t.get(pid, [])
+        for s, e, k in lst:
+            i = bisect_right(tl, s)
+            alt[pid].append((s, min(e, tl[i]) if i < len(tl) else e, k))
+    ids = np.asarray(C.st_ids, dtype=np.int64)
+    arr = to_arrays(C.clean, C.st_ids)
+    pts = np.asarray([mins(datetime.fromisoformat(t)) for t in C.meta["periods"]["fev26"]["points"]], dtype=np.int64)
+    m1 = B.price_matrix(*arr, ids, pts, excl_arrays(C.intervals, C.st_ids))
+    m2 = B.price_matrix(*arr, ids, pts, excl_arrays(alt, C.st_ids))
+    p(f"- Si un prix publié mettait fin à toute rupture ou fermeture : médiane France modifiée d'au plus {fr(float(np.nanmax(np.abs(np.nanmedian(m1, 0) - np.nanmedian(m2, 0)))))}, moyenne d'au plus {fr(float(np.nanmax(np.abs(np.nanmean(m1, 0) - np.nanmean(m2, 0)))))} depuis février 2026.")
+    # effet de l'alignement sur le flux instantané au dernier point
+    gone = [pid for pid, lst in C.intervals.items() for s, e, k in lst if k == "absente du flux instantané"]
+    no_snap = {pid: [iv for iv in lst if iv[2] != "absente du flux instantané"] for pid, lst in C.intervals.items()}
+    without = Prices(C.clean, no_snap)
+    v_without = [without.at(pid, C.now_m) for pid in C.st_ids]
+    v_with = C.vals["fev26"][-1]
+    n0, md0, mn0 = agg(v_without)
+    n1, md1, mn1 = agg(v_with)
+    ruptured_open = sum(1 for pid in gone if any(k.startswith("rupture") and e == C.now_m for s, e, k in C.intervals[pid]))
+    p(f"- Dernier point : {len(gone)} stations avec un prix de moins de 30 jours n'affichent pas de prix gazole dans le flux instantané (dont {ruptured_open} avec une rupture sans date de fin dans les flux de la veille) ; "
+      f"elles ne sont pas comptées. Sans cette règle : {nf(n0)} stations, médiane {fr(md0)}, moyenne {fr(mn0)} ; avec : {nf(n1)}, {fr(md1)}, {fr(mn1)}.")
     long_ = Counter(k for lst in C.intervals.values() for s, e, k in lst if e < INF and e - s > 30 * DAY)
     p(f"- Périodes d'exclusion terminées de plus de 30 jours : {dict(long_)} ; sans fin connue (en cours) : {dict(Counter(k for lst in C.intervals.values() for s, e, k in lst if e >= INF))}.")
     # ancienneté des prix au dernier point
@@ -683,11 +775,11 @@ def s_api(C):
     col = {c.lower(): c for c in cols}
     p(f"- {len(rows)} lignes ; colonnes gazole : {[c for c in cols if 'gazole' in c.lower()]}")
     def api_dt(s):
+        # L'export affiche l'heure du flux (heure de Paris) suivie de « +00:00 » : on garde l'heure telle quelle.
         try:
-            d = datetime.fromisoformat((s or "").strip())
+            return datetime.fromisoformat((s or "").strip()).replace(tzinfo=None)
         except ValueError:
             return None
-        return d.astimezone(B.PARIS).replace(tzinfo=None) if d.tzinfo else d
 
     api = {}
     for r in rows:
@@ -746,7 +838,7 @@ def s_dgec(C):
     p()
     p("| Vendredi | DGEC | Notre moyenne | Écart | Notre médiane | Écart | Moyenne à 0 h / samedi 0 h |")
     p("|---|---|---|---|---|---|---|")
-    gaps = []
+    gaps, mgaps = [], []
     for d, ref in sorted(DGEC.items()):
         t0 = mins(datetime.fromisoformat(d))
         if t0 > C.now_m:
@@ -756,11 +848,13 @@ def s_dgec(C):
             res[lab] = agg([C.full.at(pid, t) for pid in C.st_ids])
         _, md, mn = res["12h"]
         gaps.append(mn - ref)
-        p(f"| {d} | {fr(ref)} | {fr(mn)} | {fr(mn - ref)} | {fr(md)} | {fr(md - ref)} | {fr(res['0h'][2])} / {fr(res['sam'][2])} |")
+        mgaps.append(md - ref)
+        p(f"| {d} | {fr(ref)} | {fr(mn)} | {sg(mn - ref)} | {fr(md)} | {sg(md - ref)} | {fr(res['0h'][2])} / {fr(res['sam'][2])} |")
     p()
     if gaps:
-        p(f"- Écart moyen de notre moyenne à la DGEC : {fr(statistics.mean(gaps))} (min {fr(min(gaps))}, max {fr(max(gaps))}) sur {len(gaps)} semaines.")
-        check(None, f"Comparaison avec les prix hebdomadaires de la DGEC : notre moyenne non pondérée s'en écarte de {fr(statistics.mean(gaps))} en moyenne ({fr(min(gaps))} à {fr(max(gaps))}, {len(gaps)} semaines).")
+        p(f"- Écart moyen de notre moyenne à la DGEC : {sg(statistics.mean(gaps))} (de {sg(min(gaps))} à {sg(max(gaps))}) sur {len(gaps)} semaines ; "
+          f"de notre médiane : {sg(statistics.mean(mgaps))} (de {sg(min(mgaps))} à {sg(max(mgaps))}).")
+        check(None, f"Prix hebdomadaires de la DGEC (pondérés par les volumes), {len(gaps)} semaines : écart de notre moyenne non pondérée {sg(statistics.mean(gaps))} en moyenne (de {sg(min(gaps))} à {sg(max(gaps))}), de notre médiane {sg(statistics.mean(mgaps))} (de {sg(min(mgaps))} à {sg(max(mgaps))}).")
 
 
 def s_complements(C):
@@ -822,11 +916,11 @@ def main():
     if args.local_xml:
         for f in args.local_xml:
             with open(f, "rb") as fh:
-                R.read(fh, f)
+                R.read(fh, f, current="instantane_ruptures" in Path(f).name, snapshot="instantane" in Path(f).name)
     else:
         for name in C.build_stats["sources"]:
             R.read(B.xml_from_zip(B.fetch(f"{B.BASE}/{name}", cache, keep=name.startswith("annee/"))), name,
-                   current=name == "instantane_ruptures")
+                   current=name == "instantane_ruptures", snapshot=name.startswith("instantane"))
 
     # ---------------------------------------------------------------- chaîne indépendante
     log("nettoyage indépendant")
@@ -859,6 +953,7 @@ def main():
         C.clean[pid] = kept
     C.intervals = build_intervals(R, C.clean, C.station_dep, C.now_m)
     C.full = Prices(C.clean, C.intervals)
+    C.notes = []
     C.typo_only = Prices(C.clean)
 
     log("prix de chaque station à chaque point")
