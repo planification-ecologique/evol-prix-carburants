@@ -16,8 +16,14 @@
   // ------------------------------------------------------------------ utilitaires
   const $ = (id) => document.getElementById(id);
   const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-  const fmtPrice = (v) => (v == null ? "–" : v.toFixed(3).replace(".", ",") + " €");
-  const fmtDelta = (c) => (c == null ? "–" : (c > 0 ? "+" : c < 0 ? "−" : "") + Math.abs(c).toFixed(1).replace(".", ",") + " c€");
+  // Montants toujours en euros, avec 2 décimales
+  const fmtPrice = (v) => (v == null ? "–" : v.toFixed(2).replace(".", ",") + " €");
+  // c : écart en centimes (unité interne des données) → affiché en euros
+  const fmtDelta = (c) => {
+    if (c == null) return "–";
+    const e = Math.round(c) / 100;
+    return (e > 0 ? "+" : e < 0 ? "−" : "") + Math.abs(e).toFixed(2).replace(".", ",") + " €";
+  };
   const parseT = (s) => new Date(s + ":00Z"); // heure de Paris stockée « naïve »
   const minutesOf = (s) => Math.round(parseT(s).getTime() / 60000);
 
