@@ -37,6 +37,9 @@ jobs:
       - name: Assemblage du site
         run: |
           cp site/* _site/
+          # Force le navigateur à recharger le code à chaque nouvelle version
+          sed -i "s/app\.js\"/app.js?v=${GITHUB_SHA::7}\"/; s/style\.css\"/style.css?v=${GITHUB_SHA::7}\"/" _site/index.html
+          grep -o 'app.js?v=[a-f0-9]*\|style.css?v=[a-f0-9]*' _site/index.html
           du -sh _site/data/*
           du -sh _site/data/stations/* | sort -h | tail -3
       - name: Vérification du fond de carte IGN (informative)
