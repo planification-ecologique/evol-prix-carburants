@@ -6,7 +6,8 @@
   const PERIOD_OPTS = [["48h", "48 h"], ["7j", "7 jours"], ["3m", "3 mois"], ["fev26", "Depuis fév. 2026"], ["2025", "Depuis 2025"]];
   const SCALE_OPTS = [["FR", "France"], ["R", "Région"], ["D", "Département"], ["S", "Station"]];
   const INDICS = { mean: "Prix moyen", median: "Prix médian" };
-  const STOPS = [[26, 152, 80], [240, 162, 2], [215, 48, 39]]; // vert → orange → rouge
+  // Échelle divergente centrée sur 0 : dégradé de vert si le prix baisse, de rouge s'il monte
+  const NEUTRAL = [238, 238, 232], GREEN = [0, 104, 55], RED = [165, 0, 38];
 
   const state = { period: "7j", scale: "FR", indic: "mean", sel: { kind: "FR", code: "FR" } };
   let D = {}; // données chargées
@@ -36,13 +37,19 @@
     return `${dd}/${mm}`;
   }
 
-  function colorFor(v, lo, hi) {
+  // m : écart (en valeur absolue) qui reçoit la couleur la plus intense
+  function colorFor(v, m) {
     if (v == null || Number.isNaN(v)) return css("--null");
-    let t = hi > lo ? (v - lo) / (hi - lo) : 0.5;
-    t = Math.max(0, Math.min(1, t));
-    const [a, b, u] = t < 0.5 ? [STOPS[0], STOPS[1], t * 2] : [STOPS[1], STOPS[2], (t - 0.5) * 2];
-    const c = a.map((x, i) => Math.round(x + (b[i] - x) * u));
+    const t = m > 0 ? Math.min(1, Math.abs(v) / m) : 0;
+    const end = v < 0 ? GREEN : RED;
+    const c = NEUTRAL.map((x, i) => Math.round(x + (end[i] - x) * t));
     return `rgb(${c[0]},${c[1]},${c[2]})`;
+  }
+
+  // borne de l'échelle : 95e centile des écarts en valeur absolue (évite qu'une valeur extrême écrase les couleurs)
+  function scaleMax(values) {
+    const abs = values.map(Math.abs).sort((a, b) => a - b);
+    return quantile(abs, 0.95) || 0;
   }
 
   function quantile(sorted, q) {
@@ -105,7 +112,7 @@
     if (state.scale === "S") {
       const st = D.stations, deltas = st.delta[p];
       values = deltas.filter((x) => x != null).sort((a, b) => a - b);
-      const lo = quantile(values, 0.05), hi = quantile(values, 0.95);
+      const vmax = scaleMax(values);
       const renderer = L.canvas({ padding: 0.5 });
       layer = L.layerGroup();
       for (let i = 0; i < st.id.length; i++) {
@@ -114,14 +121,14 @@
         const m = L.circleMarker([st.lat[i], st.lon[i]], {
           renderer, radius: selected ? 7 : 3.5, weight: selected ? 2 : 0.5,
           color: selected ? css("--ink") : "rgba(0,0,0,.25)",
-          fillColor: colorFor(d, lo, hi), fillOpacity: 0.9,
+          fillColor: colorFor(d, vmax), fillOpacity: 0.9,
         });
         m.bindTooltip(() => `<strong>${st.ville[i] || "Station " + st.id[i]}</strong><br>${st.adresse[i] || ""}<br>Prix : ${fmtPrice(st.prix[i])}<br>Évolution : ${fmtDelta(d)}`);
         m.on("click", () => selectStation(i));
         layer.addLayer(m);
       }
       layer.addTo(map);
-      drawLegend(lo, hi);
+      drawLegend(vmax);
       return;
     }
 
@@ -130,12 +137,12 @@
     const geo = kind === "R" ? D.regions : D.deps;
     const val = (code) => seriesDelta(series[kind + code], state.indic);
     values = geo.features.map((f) => val(f.properties.code)).filter((x) => x != null).sort((a, b) => a - b);
-    const lo = quantile(values, 0.05), hi = quantile(values, 0.95);
+    const vmax = scaleMax(values);
     layer = L.geoJSON(geo, {
       style: (f) => {
         const selected = state.sel.kind === kind && state.sel.code === f.properties.code;
         return {
-          fillColor: colorFor(val(f.properties.code), lo, hi), fillOpacity: 0.85,
+          fillColor: colorFor(val(f.properties.code), vmax), fillOpacity: 0.85,
           color: selected ? css("--ink") : css("--surface"), weight: selected ? 2.5 : 0.8,
         };
       },
@@ -153,15 +160,14 @@
         });
       },
     }).addTo(map);
-    drawLegend(lo, hi);
+    drawLegend(vmax);
   }
 
-  function drawLegend(lo, hi) {
-    const mid = lo != null && hi != null ? (lo + hi) / 2 : null;
+  function drawLegend(m) {
     $("legend").innerHTML =
       `<div>Évolution sur la période (${state.scale === "S" ? "prix de la station" : INDICS[state.indic].toLowerCase()})</div>` +
-      `<div class="bar"></div><div class="ticks"><span>${fmtDelta(lo)}</span><span>${fmtDelta(mid)}</span><span>${fmtDelta(hi)}</span></div>` +
-      `<div style="margin-top:4px">Vert : plus forte baisse · Rouge : plus faible baisse ou hausse</div>`;
+      `<div class="bar"></div><div class="ticks"><span>${fmtDelta(-m)}</span><span>${fmtDelta(0)}</span><span>${fmtDelta(m)}</span></div>` +
+      `<div style="margin-top:4px">Vert : le prix baisse · Rouge : le prix monte · couleur plus foncée = écart plus grand</div>`;
   }
 
   // ------------------------------------------------------------------ sélection station
