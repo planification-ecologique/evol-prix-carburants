@@ -263,13 +263,35 @@ def dedup(ev):
 
 
 def find_spikes(evs):
-    """Indices des fautes de saisie corrigées ensuite : saut ≥ 0,30 € annulé (à 0,05 € près) en moins de 72 h."""
-    out = []
-    for k in range(1, len(evs) - 1):
-        (_, v0), (t1, v1), (t2, v2) = evs[k - 1], evs[k], evs[k + 1]
-        if abs(v1 - v0) >= B.SPIKE_JUMP and abs(v2 - v0) <= B.SPIKE_BACK and t2 - t1 <= B.SPIKE_HOURS * 60:
-            out.append(k)
-    return out
+    """Indices des fautes de saisie corrigées ensuite, en un passage : un prix (ou deux prix successifs) à au
+    moins 0,30 € du prix précédent, dans le même sens, suivi en moins de 72 h d'un prix plus proche du prix
+    précédent que du dernier prix erroné."""
+    out = set()
+    for k in range(1, len(evs)):
+        prev = evs[k - 1][1]
+        for run in (1, 2):
+            m = k + run - 1
+            if m + 1 >= len(evs):
+                break
+            gaps = [evs[j][1] - prev for j in range(k, m + 1)]
+            if not (all(g >= B.SPIKE_JUMP for g in gaps) or all(g <= -B.SPIKE_JUMP for g in gaps)):
+                continue
+            nxt = evs[m + 1][1]
+            if abs(nxt - prev) < abs(nxt - evs[m][1]) and evs[m + 1][0] - evs[k][0] <= B.SPIKE_HOURS * 60:
+                out.update(range(k, m + 1))
+    return sorted(out)
+
+
+def remove_spikes(evs):
+    """Retire les fautes de saisie corrigées ensuite, passage après passage, jusqu'à ce qu'il n'y en ait plus."""
+    removed = []
+    while True:
+        bad = find_spikes(evs)
+        if not bad:
+            return evs, removed
+        removed += [(evs[k - 1] if k else None, evs[k], evs[k + 1] if k + 1 < len(evs) else None) for k in bad]
+        bad = set(bad)
+        evs = [e for k, e in enumerate(evs) if k not in bad]
 
 
 def daily_medians(by_station, day0, now_m):
@@ -443,9 +465,9 @@ def s_nettoyage(C):
       + "; ".join(f"{i} {R.meta.get(i, {}).get('cp')} {R.meta.get(i, {}).get('ville')} {R.meta.get(i, {}).get('coord_brutes')}" for i in no_coord if i in act_last))
     # fautes de saisie
     st = C.build_stats
-    p(f"- Fautes de saisie écartées (recalcul) : {len(C.spikes)} allers-retours et {len(C.lows)} prix anormalement bas ; build.py : {st.get('spikes')} et {st.get('low')}.")
+    p(f"- Fautes de saisie écartées (recalcul) : {len(C.spikes)} prix corrigés ensuite et {len(C.lows)} prix anormalement bas ; build.py : {st.get('spikes')} et {st.get('low')}.")
     check(len(C.spikes) == st.get("spikes") and len(C.lows) == st.get("low"),
-          f"Fautes de saisie : {len(C.spikes)} allers-retours et {len(C.lows)} prix trop bas écartés, comme dans le calcul publié.")
+          f"Fautes de saisie : {len(C.spikes)} prix corrigés ensuite et {len(C.lows)} prix trop bas écartés, comme dans le calcul publié.")
     # événements nettoyés : comparaison exacte avec build.py
     ours = {(pid, t, v) for pid, evs in C.clean.items() for t, v in evs}
     theirs = set(zip(C.npz["sid"].tolist(), C.npz["ts"].tolist(), C.npz["pr"].tolist()))
@@ -539,10 +561,12 @@ def s_recalcul(C):
 
 def s_fautes(C):
     R = C.R
-    p(f"- Allers-retours (saut d'au moins 0,30 € annulé à 0,05 € près en moins de 72 h) écartés : {len(C.spikes)}. Les plus récents :")
-    for pid, a, b, c in sorted(C.spikes, key=lambda x: -x[2][0])[:8]:
+    p(f"- Prix corrigés ensuite (à au moins 0,30 € du prix précédent, corrigés en moins de 72 h) écartés : {len(C.spikes)}. Les plus récents :")
+    for pid, a, b, c in sorted(C.spikes, key=lambda x: -x[2][0])[:10]:
         m = R.meta.get(pid, {})
         p(f"  - {pid} ({m.get('cp')} {m.get('ville')}) : {fr(a[1] / 1000)} → {fr(b[1] / 1000)} le {ts_txt(b[0])} → {fr(c[1] / 1000)} le {ts_txt(c[0])}")
+    tol = Counter("retour à 0,05 € près" if abs(c[1] - a[1]) <= 50 else "retour à plus de 0,05 €" for _pid, a, b, c in C.spikes)
+    p(f"  - écart entre le prix de retour et le prix d'avant la faute : {dict(tol)}.")
     covered = sum(1 for _pid, _a, b, c in C.spikes if c[0] // DAY > b[0] // DAY)
     p(f"  - dont {covered} couvraient au moins un minuit (visibles dans les séries journalières).")
     p(f"- Prix inférieurs de plus de 0,50 € à la médiane nationale du jour écartés : {len(C.lows)}. Écart à la médiane : quantiles 5/50/95 % = {np.round(np.percentile([v / 1000 - r for _, _, v, r in C.lows], [5, 50, 95]), 3).tolist() if C.lows else []}. Les plus récents :")
@@ -555,7 +579,7 @@ def s_fautes(C):
     def ctx(pid, k, a=2, b=2):
         evs = C.clean[pid]
         return " → ".join(f"{fr(v / 1000)} ({ts_txt(t)})" for t, v in evs[max(0, k - a):k + b + 1])
-    p(f"- Après nettoyage, allers-retours restants : {resid}.")
+    p(f"- Après nettoyage, prix corrigés ensuite restants : {resid}.")
     for pid, k in resid_list[:6]:
         m = R.meta.get(pid, {})
         p(f"  - {pid} ({m.get('cp')} {m.get('ville')}) : {ctx(pid, k)}")
@@ -603,7 +627,7 @@ def s_fautes(C):
     p("- Stations hors autoroute le plus souvent à plus de 0,50 € au-dessus de la médiane (jours, prix au dernier point) : "
       + "; ".join(f"{C.st_ids[i]} {R.meta.get(C.st_ids[i], {}).get('ville')} {n} j {fr(None if C.vals['fev26'][-1][i] is None else C.vals['fev26'][-1][i] / 1000)}" for i, n in hi.most_common(10)))
     check(cnt[("< −0,50", "route")] + cnt[("< −0,50", "autoroute")] == 0 and resid == 0,
-          f"Après nettoyage : {resid} aller-retour restant et {cnt[('< −0,50', 'route')] + cnt[('< −0,50', 'autoroute')]} prix à plus de 0,50 € sous la médiane nationale.")
+          f"Après nettoyage : {resid} faute de saisie corrigée ensuite restante et {cnt[('< −0,50', 'route')] + cnt[('< −0,50', 'autoroute')]} prix à plus de 0,50 € sous la médiane nationale.")
     last = C.vals["fev26"][-1]
     out = [(i, v) for i, v in enumerate(last) if v is not None and abs(v / 1000 - med[-1]) > 0.40]
     p(f"- Au dernier point, {len(out)} stations s'écartent de plus de 0,40 € de la médiane ({fr(med[-1])}) :")
@@ -788,6 +812,8 @@ def s_api(C):
             continue
         api[int(r[col["id"]])] = (r[col.get("cp", col.get("code_postal", "cp"))], float(v), api_dt(r[col["gazole_maj"]]))
     p(f"- Format des dates de l'API : {[r[col['gazole_maj']] for r in rows[:2]]}")
+    both = [int(r[col["id"]]) for r in rows if r.get(col["gazole_prix"]) and r.get(col.get("gazole_rupture_debut", ""), "")]
+    p(f"- Lignes de l'API avec à la fois un prix et une rupture de gazole : {len(both)} ; exemples {both[:6]}")
     known = set(C.st_ids)
     common = [i for i in api if i in known and C.clean.get(i)]
     raw_last = {}
@@ -936,9 +962,8 @@ def main():
         evs.sort()
     C.spikes, nospike = [], {}
     for pid, evs in C.by.items():
-        bad = set(find_spikes(evs))
-        C.spikes += [(pid, evs[k - 1], evs[k], evs[k + 1]) for k in sorted(bad)]
-        nospike[pid] = [e for k, e in enumerate(evs) if k not in bad]
+        nospike[pid], rem = remove_spikes(evs)
+        C.spikes += [(pid, *r) for r in rem]
     day0 = mins(B.HISTORY_START)
     days, med = daily_medians(nospike, day0, C.now_m)
     C.lows, C.clean = [], {}
@@ -950,7 +975,8 @@ def main():
                 C.lows.append((pid, t, v, ref))
             else:
                 kept.append((t, v))
-        C.clean[pid] = kept
+        C.clean[pid], rem = remove_spikes(kept)
+        C.spikes += [(pid, *r) for r in rem]
     C.intervals = build_intervals(R, C.clean, C.station_dep, C.now_m)
     C.full = Prices(C.clean, C.intervals)
     C.notes = []

@@ -42,8 +42,9 @@ EPOCH = datetime(1970, 1, 1)
 HISTORY_START = datetime(2024, 12, 1)  # un mois avant 2025 pour connaître les prix au 1er janvier
 STALE_DAYS = 30  # un prix non mis à jour depuis plus de 30 jours n'est plus compté
 PRICE_MIN, PRICE_MAX = 1000, 3000  # millièmes d'euro : on garde 1 à 3 €/L
-# Fautes de saisie corrigées ensuite : saut d'au moins 0,30 € annulé (à 0,05 € près) dans les 72 h
-SPIKE_JUMP, SPIKE_BACK, SPIKE_HOURS = 300, 50, 72
+# Fautes de saisie corrigées ensuite : un ou deux prix qui s'écartent d'au moins 0,30 € du prix précédent,
+# corrigés dans les 72 h par un prix plus proche du prix précédent que du prix erroné
+SPIKE_JUMP, SPIKE_HOURS = 300, 72
 # Prix inférieur de plus de 0,50 € à la médiane nationale du jour : faute de saisie (ex. 1,25 € au lieu de 2,25 €)
 LOW_OUTLIER = 0.50
 FAR_FUTURE = 1 << 40
@@ -234,19 +235,34 @@ class Collector:
 
 
 def drop_spikes(sid, ts, pr):
-    """Masque des prix à garder : écarte les fautes de saisie corrigées ensuite (aller-retour)."""
+    """Masque des prix à garder : écarte les fautes de saisie corrigées ensuite.
+
+    Un prix, ou deux prix successifs, qui s'écartent d'au moins SPIKE_JUMP du prix précédent (dans le
+    même sens), et que la station corrige dans les SPIKE_HOURS heures par un prix plus proche du prix
+    précédent que du dernier prix erroné. On recommence jusqu'à ce qu'il n'y en ait plus, pour les
+    fautes enchaînées (par exemple 2,309 € → 2,990 € → 1,990 € → 2,290 €).
+    """
     keep = np.ones(len(sid), bool)
-    if len(sid) < 3:
-        return keep
-    same3 = (sid[1:-1] == sid[:-2]) & (sid[2:] == sid[1:-1])
-    spike = (
-        same3
-        & (np.abs(pr[1:-1] - pr[:-2]) >= SPIKE_JUMP)
-        & (np.abs(pr[2:] - pr[:-2]) <= SPIKE_BACK)
-        & ((ts[2:] - ts[1:-1]) <= SPIKE_HOURS * 60)
-    )
-    keep[1:-1] = ~spike
-    return keep
+    while True:
+        idx = np.flatnonzero(keep)
+        s, t, v = sid[idx], ts[idx], pr[idx]
+        bad = np.zeros(len(idx), bool)
+        for run in (1, 2):
+            k = np.arange(1, len(idx) - run)  # début de la série suspecte
+            if not len(k):
+                continue
+            m, prev, nxt = k + run - 1, k - 1, k + run
+            same = (s[prev] == s[k]) & (s[nxt] == s[k]) & (s[m] == s[k])
+            d1, dm = v[k] - v[prev], v[m] - v[prev]
+            away = ((d1 >= SPIKE_JUMP) & (dm >= SPIKE_JUMP)) | ((d1 <= -SPIKE_JUMP) & (dm <= -SPIKE_JUMP))
+            back = np.abs(v[nxt] - v[prev]) < np.abs(v[nxt] - v[m])
+            fast = (t[nxt] - t[k]) <= SPIKE_HOURS * 60
+            hit = same & away & back & fast
+            bad[k[hit]] = True
+            bad[m[hit]] = True
+        if not bad.any():
+            return keep
+        keep[idx[bad]] = False
 
 
 def drop_low_outliers(sid, ts, pr, stations, now: datetime):
@@ -451,14 +467,18 @@ def main() -> None:
     keep = np.isin(sid, stations)
     sid, ts, pr = sid[keep], ts[keep], pr[keep]
 
-    # Fautes de saisie
+    # Fautes de saisie : prix corrigés ensuite, puis prix trop bas, puis à nouveau prix corrigés
+    # (une faute peut en cacher une autre : 2,159 € → 1,555 € → 2,555 € → 2,155 €)
     keep = drop_spikes(sid, ts, pr)
     n_spikes = int(np.sum(~keep))
     sid, ts, pr = sid[keep], ts[keep], pr[keep]
     keep = drop_low_outliers(sid, ts, pr, stations, now)
     n_low = int(np.sum(~keep))
     sid, ts, pr = sid[keep], ts[keep], pr[keep]
-    print(f"Fautes de saisie écartées : {n_spikes} allers-retours, {n_low} prix anormalement bas", flush=True)
+    keep = drop_spikes(sid, ts, pr)
+    n_spikes += int(np.sum(~keep))
+    sid, ts, pr = sid[keep], ts[keep], pr[keep]
+    print(f"Fautes de saisie écartées : {n_spikes} prix corrigés ensuite, {n_low} prix anormalement bas", flush=True)
 
     # Ruptures et fermetures
     excl, excl_stats = exclusion_intervals(col, sid, ts, stations, minutes(now))

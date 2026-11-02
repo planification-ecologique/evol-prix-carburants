@@ -26,6 +26,10 @@ for i in range(40):
         v = p
         if i == 1 and k == 50:
             v = p - 1.0  # faute de saisie corrigée ensuite (aller-retour)
+        if i == 9 and k == 60:
+            v = 2.999  # prix erroné corrigé ensuite à un prix un peu différent
+        if i == 10 and k in (70, 71):
+            v = p + (0.7 if k == 70 else -0.3)  # deux fautes enchaînées (2,99 € puis 1,99 €)
         out.append(f'<prix nom="Gazole" id="1" maj="{t:%Y-%m-%dT%H:%M:%S}" valeur="{v:.3f}"/>')
         last = (t, v)
         out.append(f'<prix nom="SP95" id="2" maj="{t:%Y-%m-%dT%H:%M:%S}" valeur="{p + 0.1:.3f}"/>')
