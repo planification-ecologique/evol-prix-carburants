@@ -304,7 +304,12 @@ def main() -> None:
         series[key] = s
         delta = (mat[:, -1] - mat[:, 0]) * 100  # c€/L
         deltas[key] = [None if np.isnan(x) else round(float(x), 1) for x in delta]
-        print(f"  période {key}: {len(pts_m)} points, {int(np.sum(~np.isnan(mat[:, -1])))} stations actives", flush=True)
+        fr = s["FR"]
+        print(
+            f"  période {key}: {len(pts_m)} points, {int(np.sum(~np.isnan(mat[:, -1])))} stations actives, "
+            f"France moyen {fr['mean'][0]} → {fr['mean'][-1]}, médian {fr['median'][0]} → {fr['median'][-1]}",
+            flush=True,
+        )
 
     # Dernier prix connu de chaque station
     last_idx = np.searchsorted(sid, stations, side="right") - 1

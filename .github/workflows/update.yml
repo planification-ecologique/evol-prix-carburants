@@ -37,7 +37,8 @@ jobs:
       - name: Assemblage du site
         run: |
           cp site/* _site/
-          du -sh _site/data _site/data/* | sort -h | tail -15
+          du -sh _site/data/*
+          du -sh _site/data/stations/* | sort -h | tail -3
       - uses: actions/upload-pages-artifact@v3
         with:
           path: _site
