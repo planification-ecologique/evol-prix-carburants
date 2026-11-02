@@ -11,7 +11,7 @@
 
   const state = { period: "7j", scale: "FR", indic: "mean", sel: { kind: "FR", code: "FR" } };
   let D = {}; // données chargées
-  let map, layer, chart;
+  let map, layer, chart, renderer;
   const stationCache = {};
 
   // ------------------------------------------------------------------ utilitaires
@@ -94,6 +94,9 @@
   // ------------------------------------------------------------------ carte
   function initMap() {
     map = L.map("map", { preferCanvas: true, zoomSnap: 0.25, minZoom: 4 }).setView([46.6, 2.4], 5.75);
+    // Un seul calque de dessin pour toutes les couches : en recréer un à chaque rendu empilait
+    // des canevas vides par-dessus la carte, qui interceptaient les clics.
+    renderer = L.canvas({ padding: 0.5 });
     // Fond Plan IGN (Géoplateforme) : libre d'accès, sans clé d'API
     L.tileLayer(
       "https://data.geopf.fr/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=GEOGRAPHICALGRIDSYSTEMS.PLANIGNV2" +
@@ -113,7 +116,6 @@
       const st = D.stations, deltas = st.delta[p];
       values = deltas.filter((x) => x != null).sort((a, b) => a - b);
       const vmax = scaleMax(values);
-      const renderer = L.canvas({ padding: 0.5 });
       layer = L.layerGroup();
       for (let i = 0; i < st.id.length; i++) {
         const d = deltas[i];
@@ -139,6 +141,7 @@
     values = geo.features.map((f) => val(f.properties.code)).filter((x) => x != null).sort((a, b) => a - b);
     const vmax = scaleMax(values);
     layer = L.geoJSON(geo, {
+      renderer,
       style: (f) => {
         const selected = state.sel.kind === kind && state.sel.code === f.properties.code;
         return {
@@ -268,16 +271,29 @@
   // ------------------------------------------------------------------ rendu
   async function render() {
     syncControls();
+    if (state.scale === "S" && !D.stations) {
+      // les stations (1,6 Mo) ne sont nécessaires qu'à l'échelle Station
+      $("map-loading").hidden = false;
+      try {
+        D.stations = await loadStations();
+      } finally {
+        $("map-loading").hidden = true;
+      }
+    }
     drawMap();
     await drawSide();
   }
 
+  const get = (f) => fetch(`data/${f}`).then((r) => { if (!r.ok) throw new Error(f); return r.json(); });
+  let stationsPromise;
+  const loadStations = () => (stationsPromise ||= get("stations.json"));
+
   async function load() {
-    const get = (f) => fetch(`data/${f}`).then((r) => { if (!r.ok) throw new Error(f); return r.json(); });
-    const [meta, series, stations, regions, deps] = await Promise.all([
-      get("meta.json"), get("series.json"), get("stations.json"), get("regions.geojson"), get("departements.geojson"),
+    // Uniquement ce qu'il faut pour le premier affichage (France, régions, départements)
+    const [meta, series, regions, deps] = await Promise.all([
+      get("meta.json"), get("series.json"), get("regions.geojson"), get("departements.geojson"),
     ]);
-    D = { meta, series, stations, regions, deps };
+    D = { meta, series, regions, deps };
     $("maj").textContent = `Données jusqu'au ${meta.data_until.replace("T", " à ")} · ${meta.n_stations.toLocaleString("fr-FR")} stations · mise à jour toutes les heures`;
     document.querySelectorAll("[data-k=stale_days]").forEach((e) => (e.textContent = meta.stale_days));
     document.querySelectorAll("[data-k=price_range]").forEach((e) => (e.textContent = `${meta.price_range[0]} à ${meta.price_range[1]}`));
@@ -291,7 +307,10 @@
     initMap();
     try {
       await load();
+      $("map-loading").hidden = true;
       await render();
+      // préchargement des stations en arrière-plan, une fois la page affichée
+      setTimeout(() => loadStations().then((st) => (D.stations ||= st)).catch(() => {}), 500);
     } catch (e) {
       $("maj").textContent = "Impossible de charger les données (" + e.message + ").";
       console.error(e);
