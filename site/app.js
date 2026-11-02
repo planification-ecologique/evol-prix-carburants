@@ -81,10 +81,12 @@
   // ------------------------------------------------------------------ carte
   function initMap() {
     map = L.map("map", { preferCanvas: true, zoomSnap: 0.25, minZoom: 4 }).setView([46.6, 2.4], 5.75);
-    L.tileLayer("https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}{r}.png", {
-      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/">CARTO</a>',
-      subdomains: "abcd", maxZoom: 18,
-    }).addTo(map);
+    // Fond Plan IGN (Géoplateforme) : libre d'accès, sans clé d'API
+    L.tileLayer(
+      "https://data.geopf.fr/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=GEOGRAPHICALGRIDSYSTEMS.PLANIGNV2" +
+        "&STYLE=normal&TILEMATRIXSET=PM&FORMAT=image/png&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}",
+      { attribution: '&copy; <a href="https://www.ign.fr/">IGN</a> – Plan IGN', maxZoom: 18, opacity: 0.6 },
+    ).addTo(map);
     window.__map = map; // pratique pour déboguer depuis la console
   }
 
