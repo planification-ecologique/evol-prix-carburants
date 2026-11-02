@@ -1,0 +1,89 @@
+:root {
+  --bg: #f6f6f3;
+  --surface: #ffffff;
+  --ink: #1d1d1b;
+  --ink-2: #55554f;
+  --ink-3: #8a8a83;
+  --line: #e3e3dd;
+  --accent: #1f5fbf;
+  --mean: #1f5fbf;
+  --median: #7a4fbf;
+  --null: #c9c9c3;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #161615;
+    --surface: #20201e;
+    --ink: #ededE8;
+    --ink-2: #b5b5ad;
+    --ink-3: #85857e;
+    --line: #33332f;
+    --accent: #6fa1ef;
+    --mean: #6fa1ef;
+    --median: #b99af0;
+    --null: #4a4a46;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  padding: 20px 24px 40px;
+  max-width: 1400px;
+  margin-inline: auto;
+}
+header { display: flex; justify-content: space-between; align-items: flex-end; gap: 16px; flex-wrap: wrap; margin-bottom: 16px; }
+h1 { font-size: 24px; margin: 0; letter-spacing: -0.01em; }
+h2 { font-size: 17px; margin: 0; }
+.sub { margin: 4px 0 0; color: var(--ink-2); }
+.maj { margin: 0; color: var(--ink-2); font-size: 13px; }
+
+.controls { display: flex; flex-wrap: wrap; gap: 12px 24px; margin-bottom: 16px; }
+.ctl { display: flex; flex-direction: column; gap: 4px; }
+.ctl-label { font-size: 12px; color: var(--ink-3); text-transform: uppercase; letter-spacing: .04em; }
+.seg { display: inline-flex; flex-wrap: wrap; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 2px; }
+.seg button {
+  border: 0; background: transparent; color: var(--ink-2); font: inherit; font-size: 14px;
+  padding: 6px 12px; border-radius: 6px; cursor: pointer;
+}
+.seg button:hover { color: var(--ink); }
+.seg button[aria-checked="true"] { background: var(--accent); color: #fff; }
+
+main { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 16px; }
+@media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
+.map-card { padding: 0; overflow: hidden; position: relative; }
+#map { height: 620px; background: var(--bg); }
+@media (max-width: 900px) { #map { height: 460px; } }
+.legend {
+  position: absolute; left: 12px; bottom: 12px; z-index: 500; background: var(--surface);
+  border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font-size: 12px; color: var(--ink-2);
+  min-width: 220px;
+}
+.legend .bar { height: 10px; border-radius: 4px; margin: 6px 0 4px; background: linear-gradient(90deg, #1a9850, #f0a202, #d73027); }
+.legend .ticks { display: flex; justify-content: space-between; font-variant-numeric: tabular-nums; }
+
+.side { display: flex; flex-direction: column; gap: 8px; }
+.sel-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.sel-sub { margin: 0; color: var(--ink-2); font-size: 13px; min-height: 1.5em; }
+.link { background: none; border: 0; color: var(--accent); cursor: pointer; font: inherit; font-size: 13px; padding: 0; }
+.chart-wrap { position: relative; height: 320px; }
+table.synth { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; font-size: 14px; }
+.synth th, .synth td { padding: 6px 8px; text-align: right; border-bottom: 1px solid var(--line); }
+.synth th:first-child, .synth td:first-child { text-align: left; }
+.synth thead th { color: var(--ink-3); font-weight: 500; font-size: 12px; }
+.synth .swatch { display: inline-block; width: 14px; height: 3px; border-radius: 2px; vertical-align: middle; margin-right: 6px; }
+.down { color: #1a7f45; } .up { color: #c0392b; }
+@media (prefers-color-scheme: dark) { .down { color: #5cc98a; } .up { color: #f07a6a; } }
+.note { margin: 0; color: var(--ink-3); font-size: 12px; }
+
+.hyp { margin-top: 16px; }
+.hyp ul { margin: 8px 0 0; padding-left: 20px; color: var(--ink-2); }
+.hyp li { margin: 4px 0; }
+.hyp a { color: var(--accent); }
+.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+.leaflet-container { font: inherit; }
+.leaflet-tooltip { font-size: 13px; }
+@media (max-width: 600px) { body { padding: 16px; } }

@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Évolution du prix du gazole</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Évolution du prix du gazole</h1>
+      <p class="sub">Stations-service de France métropolitaine, d'après les données ouvertes de prix-carburants.gouv.fr.</p>
+    </div>
+    <p class="maj" id="maj">Chargement des données…</p>
+  </header>
+
+  <section class="controls" aria-label="Filtres">
+    <div class="ctl">
+      <span class="ctl-label">Période</span>
+      <div class="seg" id="ctl-period" role="radiogroup"></div>
+    </div>
+    <div class="ctl">
+      <span class="ctl-label">Échelle</span>
+      <div class="seg" id="ctl-scale" role="radiogroup"></div>
+    </div>
+    <div class="ctl">
+      <span class="ctl-label">Indicateur</span>
+      <div class="seg" id="ctl-indic" role="radiogroup"></div>
+    </div>
+  </section>
+
+  <main>
+    <section class="card map-card">
+      <div id="map" aria-label="Carte de l'évolution du prix"></div>
+      <div class="legend" id="legend"></div>
+    </section>
+
+    <section class="card side">
+      <div class="sel-head">
+        <h2 id="sel-title">France</h2>
+        <button id="sel-reset" class="link" hidden>Revenir à la France</button>
+      </div>
+      <p class="sel-sub" id="sel-sub"></p>
+      <div class="chart-wrap"><canvas id="chart" aria-label="Courbe des prix moyen et médian"></canvas></div>
+      <table class="synth" id="synth">
+        <caption class="visually-hidden">Synthèse de la période</caption>
+        <thead><tr><th></th><th>Début</th><th>Fin</th><th>Écart</th><th>Min</th><th>Max</th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <p class="note" id="synth-note"></p>
+    </section>
+  </main>
+
+  <section class="card hyp">
+    <h2>Hypothèses et méthode</h2>
+    <ul id="hyp-list">
+      <li><strong>Source :</strong> flux annuels, quotidiens et instantané de <a href="https://www.prix-carburants.gouv.fr/rubrique/opendata/">prix-carburants.gouv.fr</a> (Licence Ouverte 2.0). Les données sont recalculées toutes les heures. Les prix sont publiés par les stations elles-mêmes.</li>
+      <li><strong>Prix d'une station à un instant donné :</strong> c'est le dernier prix déclaré à cet instant. Il n'est plus compté s'il date de plus de <span data-k="stale_days">30</span> jours, la station étant alors considérée comme fermée ou inactive.</li>
+      <li><strong>Pas de temps :</strong> à l'heure sur 48 h, à la journée sur 7 jours, 3 mois et depuis février 2026, à la semaine depuis janvier 2025. Chaque point est l'état des prix en début de pas (à minuit pour un pas journalier). Le dernier point correspond au dernier prix reçu.</li>
+      <li><strong>Prix moyen et médian :</strong> ils sont calculés sur l'ensemble des stations actives de la zone, sans pondération par les volumes vendus, que les données ne fournissent pas.</li>
+      <li><strong>Prix aberrants :</strong> les prix en dehors de <span data-k="price_range">1 à 3</span> €/L sont écartés.</li>
+      <li><strong>Évolution affichée sur la carte :</strong> c'est l'écart en c€/L entre le premier et le dernier point de la période. L'échelle de couleur est relative. Le vert marque les zones qui baissent le plus et le rouge celles qui baissent le moins ou augmentent. Les bornes de couleur sont les 5ᵉ et 95ᵉ centiles des zones affichées. À l'échelle France, la carte montre les départements pour situer les écarts.</li>
+      <li><strong>Couverture :</strong> France métropolitaine, y compris la Corse. Le département est déduit du code postal de la station. Les enseignes des distributeurs ne figurent pas dans les données publiques ; elles seront ajoutées plus tard depuis OpenStreetMap.</li>
+    </ul>
+  </section>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
