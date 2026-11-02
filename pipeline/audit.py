@@ -68,6 +68,7 @@ class Raw:
                 continue
             m = self.meta.setdefault(pid, {})
             m["cp"] = el.get("cp") or m.get("cp", "")
+            m["pop"] = el.get("pop") or m.get("pop", "")
             lat, lon = B.parse_coord(el.get("latitude")), B.parse_coord(el.get("longitude"))
             if lat is not None and lon is not None:
                 m["lat"], m["lon"] = lat, lon
@@ -103,6 +104,14 @@ class Raw:
                     s["prix_>3"] += 1
                     ex["prix_>3"].append((pid, pr.get("maj"), pr.get("valeur")))
                 self.ev.append((pid, t, v))
+            for r in el.iter("rupture"):
+                s["rupture_elements"] += 1
+                if r.get("nom") == "Gazole" or r.get("id") == "1":
+                    s["rupture_gazole"] += 1
+                    ex["rupture_gazole"].append((pid, r.get("debut"), r.get("fin"), r.get("type")))
+            for f in el.iter("fermeture"):
+                s["fermeture_elements"] += 1
+                ex["fermeture"].append((pid, f.get("type"), f.get("debut"), f.get("fin")))
             if status:
                 for r in el.iter("rupture"):
                     if r.get("nom") == "Gazole" or r.get("id") == "1":
@@ -156,6 +165,8 @@ def main():
         if k.endswith(":ex"):
             continue
         p(f"| {k} | {s['pdv']} | {s['gazole']} | {s['avant_dec_2024']} | {s['date_illisible']} | {s['prix_illisible']} | {s['date_future']} | {s['prix_<1']} | {s['prix_>3']} |")
+    p()
+    p("Éléments rupture / fermeture par source : " + ", ".join(f"{k}: {s['rupture_elements']} ruptures dont {s['rupture_gazole']} gazole, {s['fermeture_elements']} fermetures" for k, s in R.src.items() if not k.endswith(":ex")))
     p()
     p("Carburants rencontrés (id, nom) : " + ", ".join(f"{k}={v}" for k, v in sorted(R.fuel_names.items(), key=lambda x: -x[1])))
     p()
@@ -388,6 +399,47 @@ def main():
         p(f"- Stations actives chez nous mais sans prix gazole dans l'API : {len(missing_api)}.")
     except Exception as e:  # noqa: BLE001
         p(f"- Comparaison impossible : {e!r}")
+    p()
+
+    # ------------------------------------------------------------------ 10. compléments
+    p("## 10. Compléments")
+    vals, cnts = np.unique(np.round(last[act], 3), return_counts=True)
+    top = sorted(zip(cnts.tolist(), vals.tolist()), reverse=True)[:6]
+    p(f"- Prix les plus fréquents au dernier point (nombre de stations, prix) : {top}")
+    pts_f = meta["periods"]["fev26"]["points"]
+    share = np.nansum(np.isclose(mat, 2.25), axis=0) / np.sum(~np.isnan(mat), axis=0)
+    p("- Part des stations actives à exactement 2,250 € (un point par semaine) : " + ", ".join(f"{pts_f[i][:10]} {share[i]:.1%}" for i in range(0, len(pts_f), 7)) + f", dernier point {share[-1]:.1%}")
+    # écarts signés à la médiane, par type de route (A = autoroute)
+    pop = np.asarray([R.meta.get(int(i), {}).get("pop", "") for i in st_ids])
+    sdev = mat - fr_med[None, :]
+    for lab, msk in (("autoroute", pop == "A"), ("route", pop != "A")):
+        sub = sdev[msk]
+        p(f"- Écarts signés à la médiane ({lab}, {int(msk.sum())} stations) : < −0,50 € : {int(np.nansum(sub < -0.5))} station-jours ; < −0,30 € : {int(np.nansum(sub < -0.3))} ; > +0,30 € : {int(np.nansum(sub > 0.3))} ; > +0,50 € : {int(np.nansum(sub > 0.5))} ; > +0,70 € : {int(np.nansum(sub > 0.7))}")
+    lows = sdev[~np.isnan(sdev) & (sdev < -0.5)]
+    p(f"- Écarts < −0,50 € : quantiles 5/50/95 % = {np.round(np.percentile(lows, [5, 50, 95]), 3).tolist() if lows.size else []}")
+    p("- Au dernier point, écarts > 0,40 € avec type de route et prix précédent :")
+    for i in out_last[:15]:
+        pid = int(st_ids[i])
+        a_, b_ = np.searchsorted(sid, [pid, pid + 1])
+        hist = [(str(B.from_minutes(t))[:16], round(float(v) / 1000, 3)) for t, v in zip(ts[a_:b_][-4:], pr[a_:b_][-4:])]
+        p(f"  - {pid} {R.meta.get(pid, {}).get('ville')} pop={R.meta.get(pid, {}).get('pop')} : derniers prix {hist}")
+    # allers-retours qui touchent un point de calcul (minuit)
+    mid_hit = 0
+    for i in idx:
+        a0, b0 = ts[i] // 1440, ts[i + 1] // 1440
+        mid_hit += int(b0 > a0)
+    p(f"- Allers-retours qui couvrent au moins un minuit (donc visibles dans les séries journalières) : {mid_hit} sur {len(idx)}.")
+    # doublons de coordonnées
+    shown = 0
+    for (la, lo), v in dup[:6]:
+        ids_ = [int(st_ids[i]) for i in np.where(act & (np.round(lat, 4) == la) & (np.round(lon, 4) == lo))[0]]
+        p(f"  - ({la}, {lo}) : " + "; ".join(f"{j} {R.meta.get(j, {}).get('adresse')} {R.meta.get(j, {}).get('ville')} prix {stations_js['prix'][stations_js['id'].index(j)]} maj {stations_js['maj'][stations_js['id'].index(j)]}" for j in ids_))
+        shown += 1
+    # moyennes et médianes journalières autour des semaines publiées par la DGEC
+    p("- Valeurs journalières France (à minuit) du 7 septembre au 12 octobre 2026 :")
+    for t, mn, md in zip(pts_f, fr_mean, fr_med):
+        if "2026-09-07" <= t[:10] <= "2026-10-12":
+            p(f"  - {t[:10]} : moyenne {mn:.3f} €, médiane {md:.3f} €")
     p()
 
     # ------------------------------------------------------------------ 9. moyennes hebdomadaires (pour comparer à une référence publiée)
