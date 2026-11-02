@@ -15,10 +15,22 @@ Page web qui montre l'évolution du prix du gazole dans les stations-service de 
 
 Les hypothèses de calcul sont détaillées en bas de la page.
 
+## Nettoyage des données
+
+- Prix hors de la plage 1 à 3 €/L écartés ; doublons (même station, même horodatage) supprimés.
+- Fautes de saisie écartées : un ou deux prix qui s'écartent d'au moins 0,30 € du prix précédent et que la station corrige dans les 72 heures par un prix plus proche du prix précédent (par exemple 2,25 € → 1,25 € → 2,25 €, ou 2,36 € → 2,99 € → 2,30 €) ; et prix inférieur de plus de 0,50 € à la médiane nationale du jour. La station garde son prix valide précédent.
+- Ruptures de gazole et fermetures : la station n'est pas comptée pendant ces périodes (balises `rupture` et `fermeture` des flux, et ruptures en cours du flux instantané). Sans date de fin, la période s'arrête au prix suivant publié par la station.
+- Dernier point : seules les stations qui affichent un prix gazole dans le flux instantané sont comptées (même périmètre que l'export officiel de data.economie.gouv.fr).
+- Stations sans coordonnées valides : comptées dans les statistiques, absentes de la carte.
+
+## Audit de la qualité des données
+
+`.github/workflows/audit.yml` (lancement manuel, ou à chaque push sur une branche `claude/audit-…`) recalcule les données, puis `pipeline/audit.py` relit les mêmes flux et refait toute la chaîne de calcul avec une implémentation indépendante. Il compare le résultat aux fichiers publiés, à l'export officiel de data.economie.gouv.fr et aux prix hebdomadaires publiés par le ministère. Le rapport s'affiche dans le résumé de l'exécution (onglet Actions).
+
 ## En local
 
 ```bash
-pip install numpy
+pip install numpy shapely
 python pipeline/build.py --out _site/data   # nécessite un accès à donnees.roulez-eco.fr
 cp site/* _site/ && python -m http.server -d _site
 ```
@@ -27,5 +39,6 @@ Test sans réseau, sur un flux synthétique :
 
 ```bash
 python tests/make_fixture.py /tmp/fixture.xml
-python pipeline/build.py --local-xml /tmp/fixture.xml --out /tmp/out/data --now 2026-11-02T14:00 --no-geojson
+python pipeline/build.py --local-xml /tmp/fixture.xml --out /tmp/out/data --now 2026-11-02T14:00 --no-geojson --dump-events /tmp/events.npz
+python pipeline/audit.py --local-xml /tmp/fixture.xml --data /tmp/out/data --events /tmp/events.npz
 ```

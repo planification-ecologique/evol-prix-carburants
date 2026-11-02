@@ -122,6 +122,7 @@
       const vmax = scaleMax(values);
       layer = L.layerGroup();
       for (let i = 0; i < st.id.length; i++) {
+        if (st.lat[i] == null || st.lon[i] == null) continue; // station sans coordonnées valides : comptée, mais pas cartographiée
         const d = deltas[i];
         const selected = state.sel.kind === "S" && state.sel.code === st.id[i];
         const m = L.circleMarker([st.lat[i], st.lon[i]], {

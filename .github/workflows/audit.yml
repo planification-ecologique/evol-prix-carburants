@@ -1,0 +1,31 @@
+name: Audit des données
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["claude/audit-**"]
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install numpy==2.1.3 shapely==2.0.6
+      - uses: actions/cache/restore@v4
+        with:
+          path: .cache
+          key: archives-v1-audit
+          restore-keys: archives-v1-
+      - name: Calcul des données
+        run: python pipeline/build.py --out _site/data --cache .cache --dump-events events.npz --snapshot flux
+      - name: Audit (relit les mêmes flux et refait tout le calcul indépendamment)
+        run: |
+          python pipeline/audit.py --data _site/data --cache .cache --events events.npz --snapshot flux | tee audit.md
+          cat audit.md >> "$GITHUB_STEP_SUMMARY"

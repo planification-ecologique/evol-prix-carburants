@@ -18,7 +18,9 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import math
 import sys
+from collections import Counter
 import time
 import urllib.request
 import zipfile
@@ -40,6 +42,12 @@ EPOCH = datetime(1970, 1, 1)
 HISTORY_START = datetime(2024, 12, 1)  # un mois avant 2025 pour connaître les prix au 1er janvier
 STALE_DAYS = 30  # un prix non mis à jour depuis plus de 30 jours n'est plus compté
 PRICE_MIN, PRICE_MAX = 1000, 3000  # millièmes d'euro : on garde 1 à 3 €/L
+# Fautes de saisie corrigées ensuite : un ou deux prix qui s'écartent d'au moins 0,30 € du prix précédent,
+# corrigés dans les 72 h par un prix plus proche du prix précédent que du prix erroné
+SPIKE_JUMP, SPIKE_HOURS = 300, 72
+# Prix inférieur de plus de 0,50 € à la médiane nationale du jour : faute de saisie (ex. 1,25 € au lieu de 2,25 €)
+LOW_OUTLIER = 0.50
+FAR_FUTURE = 1 << 40
 
 
 def minutes(dt: datetime) -> int:
@@ -53,12 +61,20 @@ def from_minutes(m: int) -> datetime:
 # --------------------------------------------------------------------------- téléchargement
 
 
+# Si défini, chaque fichier téléchargé y est copié, et relu tel quel ensuite (l'audit relit ainsi
+# exactement les mêmes flux que le calcul, même si le flux instantané a changé entre-temps).
+SNAPSHOT: Path | None = None
+
+
 def fetch(url: str, cache: Path | None, keep: bool) -> bytes:
     """Télécharge url. Si keep, le fichier est mis en cache (archives immuables)."""
     name = url.removeprefix(BASE + "/").replace("/", "_") or "root"
     path = cache / name if cache else None
     if keep and path and path.exists():
         return path.read_bytes()
+    snap = SNAPSHOT / name if SNAPSHOT and url.startswith(BASE) else None
+    if snap and snap.exists():
+        return snap.read_bytes()
     last = None
     for attempt in range(4):
         try:
@@ -68,6 +84,9 @@ def fetch(url: str, cache: Path | None, keep: bool) -> bytes:
             if keep and path:
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_bytes(data)
+            if snap:
+                snap.parent.mkdir(parents=True, exist_ok=True)
+                snap.write_bytes(data)
             return data
         except Exception as e:  # noqa: BLE001
             last = e
@@ -100,6 +119,8 @@ def parse_price(s: str) -> int | None:
         v = float(s)
     except (TypeError, ValueError):
         return None
+    if not math.isfinite(v):
+        return None
     if v < 100:
         v *= 1000
     return int(round(v))
@@ -121,8 +142,18 @@ class Collector:
         self.ts: list[int] = []
         self.price: list[int] = []
         self.meta: dict[int, dict] = {}
+        # ruptures de gazole : (station, début) -> [fin | None, type, en cours selon le flux instantané]
+        self.rupt: dict[tuple[int, int], list] = {}
+        # fermetures : (station, type, début) -> fin | None
+        self.ferm: dict[tuple[int, str, int], int | None] = {}
+        # stations qui affichent un prix gazole dans le flux instantané (état officiel actuel)
+        self.priced_now: set[int] = set()
+        self.snapshot_read = False
 
-    def read(self, stream, since: datetime, label: str) -> None:
+    def read(self, stream, since: datetime, label: str, current: bool = False, snapshot: bool = False) -> None:
+        """current=True pour le flux instantané avec ruptures : ses ruptures sont en cours maintenant.
+        snapshot=True pour les flux instantanés : on note les stations qui affichent un prix gazole."""
+        self.snapshot_read |= snapshot
         n_before = len(self.ts)
         since_m = minutes(since)
         for _, el in ET.iterparse(stream, events=("end",)):
@@ -150,12 +181,39 @@ class Collector:
                 dt, v = parse_maj(p.get("maj")), parse_price(p.get("valeur"))
                 if dt is None or v is None:
                     continue
+                if snapshot:
+                    self.priced_now.add(pid)
                 t = minutes(dt)
                 if t < since_m:
                     continue
                 self.sid.append(pid)
                 self.ts.append(t)
                 self.price.append(v)
+            for r in el.iter("rupture"):
+                if r.get("nom") != "Gazole" and r.get("id") != "1":
+                    continue
+                d = parse_maj(r.get("debut") or "")
+                if d is None:
+                    continue
+                f = parse_maj(r.get("fin") or "")
+                fin = minutes(f) if f else None
+                key = (pid, minutes(d))
+                prev = self.rupt.get(key)
+                if prev is None:
+                    self.rupt[key] = [None if current else fin, r.get("type") or "", current]
+                elif current:
+                    prev[0], prev[2] = None, True
+                elif fin is not None:
+                    prev[0] = fin  # une date de fin connue l'emporte
+            for f_el in el.iter("fermeture"):
+                d = parse_maj(f_el.get("debut") or "")
+                if d is None:
+                    continue
+                f = parse_maj(f_el.get("fin") or "")
+                key = (pid, f_el.get("type") or "", minutes(d))
+                fin = minutes(f) if f else None
+                if key not in self.ferm or fin is not None:
+                    self.ferm[key] = fin
             el.clear()
         print(f"  {label}: {len(self.ts) - n_before} prix gazole", flush=True)
 
@@ -171,6 +229,101 @@ class Collector:
         keep = np.ones(len(sid), bool)
         keep[:-1] = (sid[1:] != sid[:-1]) | (ts[1:] != ts[:-1])
         return sid[keep], ts[keep], pr[keep]
+
+
+# --------------------------------------------------------------------------- nettoyage
+
+
+def drop_spikes(sid, ts, pr):
+    """Masque des prix à garder : écarte les fautes de saisie corrigées ensuite.
+
+    Un prix, ou deux prix successifs, qui s'écartent d'au moins SPIKE_JUMP du prix précédent (dans le
+    même sens), et que la station corrige dans les SPIKE_HOURS heures par un prix plus proche du prix
+    précédent que du dernier prix erroné. On recommence jusqu'à ce qu'il n'y en ait plus, pour les
+    fautes enchaînées (par exemple 2,309 € → 2,990 € → 1,990 € → 2,290 €).
+    """
+    keep = np.ones(len(sid), bool)
+    while True:
+        idx = np.flatnonzero(keep)
+        s, t, v = sid[idx], ts[idx], pr[idx]
+        bad = np.zeros(len(idx), bool)
+        for run in (1, 2):
+            k = np.arange(1, len(idx) - run)  # début de la série suspecte
+            if not len(k):
+                continue
+            m, prev, nxt = k + run - 1, k - 1, k + run
+            same = (s[prev] == s[k]) & (s[nxt] == s[k]) & (s[m] == s[k])
+            d1, dm = v[k] - v[prev], v[m] - v[prev]
+            away = ((d1 >= SPIKE_JUMP) & (dm >= SPIKE_JUMP)) | ((d1 <= -SPIKE_JUMP) & (dm <= -SPIKE_JUMP))
+            back = np.abs(v[nxt] - v[prev]) < np.abs(v[nxt] - v[m])
+            fast = (t[nxt] - t[k]) <= SPIKE_HOURS * 60
+            hit = same & away & back & fast
+            bad[k[hit]] = True
+            bad[m[hit]] = True
+        if not bad.any():
+            return keep
+        keep[idx[bad]] = False
+
+
+def drop_low_outliers(sid, ts, pr, stations, now: datetime):
+    """Masque des prix à garder : écarte ceux inférieurs de plus de LOW_OUTLIER € à la médiane nationale du jour."""
+    days = np.arange(minutes(HISTORY_START), minutes(now) + 1, 1440, dtype=np.int64)
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        med = np.nanmedian(price_matrix(sid, ts, pr, stations, days), axis=0)
+    d = np.clip((ts - days[0]) // 1440, 0, len(days) - 1)
+    ref = med[d]
+    return ~(np.isfinite(ref) & (pr / 1000.0 < ref - LOW_OUTLIER))
+
+
+def exclusion_intervals(col: Collector, sid, ts, stations, now_m: int):
+    """Intervalles [début, fin) pendant lesquels une station ne vend pas de gazole (rupture ou fermeture).
+
+    Une rupture ou une fermeture sans date de fin prend fin au premier prix publié ensuite
+    (une station qui publie un prix vend à nouveau du gazole), sauf rupture encore en cours
+    d'après le flux instantané. Au dernier point, une station qui n'affiche pas de prix gazole
+    dans le flux instantané n'est pas comptée, comme sur l'export officiel.
+    """
+    big = np.int64(1) << 32
+    keys = sid * big + ts
+
+    def next_price(pid, t):
+        i = int(np.searchsorted(keys, pid * big + t, side="right"))
+        return int(ts[i]) if i < len(sid) and sid[i] == pid else None
+
+    rows, starts, ends = [], [], []
+    stats = Counter()
+
+    def add(pid, s, e, kind):
+        r = int(np.searchsorted(stations, pid))
+        if r >= len(stations) or stations[r] != pid or (e is not None and e <= s):
+            return
+        rows.append(r)
+        starts.append(s)
+        ends.append(FAR_FUTURE if e is None else e)
+        stats[kind] += 1
+
+    for (pid, s), (fin, typ, current) in col.rupt.items():
+        if fin is None and not current:
+            nxt = next_price(pid, s)
+            fin = nxt if nxt is not None else now_m  # terminée avant maintenant, date exacte inconnue
+        add(pid, s, fin, f"rupture {typ or '?'}{' en cours' if current else ''}")
+    for (pid, typ, s), fin in col.ferm.items():
+        if fin is None:
+            fin = next_price(pid, s)
+        add(pid, s, fin, f"fermeture {typ or '?'}")
+    if col.snapshot_read:
+        covered = {int(stations[r]) for r, s, e in zip(rows, starts, ends) if s <= now_m < e}
+        last = np.searchsorted(sid, stations, side="right") - 1
+        for i, pid in enumerate(stations.tolist()):
+            j = int(last[i])
+            if j < 0 or int(sid[j]) != pid or now_m - int(ts[j]) > STALE_DAYS * 24 * 60:
+                continue  # pas de prix récent : déjà hors du calcul
+            if pid not in col.priced_now and pid not in covered:
+                add(pid, now_m, None, "absente du flux instantané")
+    return (np.asarray(rows, dtype=np.int64), np.asarray(starts, dtype=np.int64), np.asarray(ends, dtype=np.int64)), stats
 
 
 # --------------------------------------------------------------------------- périodes
@@ -198,8 +351,12 @@ def periods(now: datetime):
     }
 
 
-def price_matrix(sid, ts, pr, stations, points_m):
-    """prix[i, k] : dernier prix connu de stations[i] à l'instant points_m[k] (NaN si absent ou périmé)."""
+def price_matrix(sid, ts, pr, stations, points_m, excl=None):
+    """prix[i, k] : dernier prix connu de stations[i] à l'instant points_m[k].
+
+    NaN si la station n'a pas de prix, si ce prix date de plus de STALE_DAYS jours,
+    ou si l'instant tombe dans un intervalle d'exclusion (rupture, fermeture).
+    """
     big = np.int64(1) << 32
     keys = sid * big + ts
     q = (stations[:, None] * big + points_m[None, :]).ravel()
@@ -210,8 +367,15 @@ def price_matrix(sid, ts, pr, stations, points_m):
     idx_c = np.where(valid, idx, 0)
     valid &= sid[idx_c] == st_q
     valid &= (t_q - ts[idx_c]) <= STALE_DAYS * 24 * 60
-    out = np.where(valid, pr[idx_c] / 1000.0, np.nan)
-    return out.reshape(len(stations), len(points_m))
+    out = np.where(valid, pr[idx_c] / 1000.0, np.nan).reshape(len(stations), len(points_m))
+    if excl is not None and len(excl[0]):
+        rows, starts, ends = excl
+        a = np.searchsorted(points_m, starts, side="left")
+        b = np.searchsorted(points_m, ends, side="left")
+        for r, i, j in zip(rows.tolist(), a.tolist(), b.tolist()):
+            if j > i:
+                out[r, i:j] = np.nan
+    return out
 
 
 def aggregate(mat):
@@ -240,6 +404,8 @@ def main() -> None:
     ap.add_argument("--now", help="heure de Paris, format ISO (tests)")
     ap.add_argument("--local-xml", nargs="*", help="fichiers XML locaux au lieu du téléchargement")
     ap.add_argument("--no-geojson", action="store_true")
+    ap.add_argument("--dump-events", help="enregistre les prix nettoyés et les exclusions (npz) pour l'audit")
+    ap.add_argument("--snapshot", help="dossier où copier les flux téléchargés, pour que l'audit relise les mêmes")
     args = ap.parse_args()
 
     now = datetime.fromisoformat(args.now) if args.now else datetime.now(PARIS).replace(tzinfo=None)
@@ -248,25 +414,36 @@ def main() -> None:
     (out / "stations").mkdir(parents=True, exist_ok=True)
     cache = Path(args.cache)
 
+    if args.snapshot:
+        global SNAPSHOT
+        SNAPSHOT = Path(args.snapshot)
+
     col = Collector()
     print("Lecture des flux…", flush=True)
+    sources = []  # (chemin, en cours) dans l'ordre de lecture, pour l'audit
     if args.local_xml:
+        # tests : un fichier dont le nom contient « instantane » joue le rôle du flux instantané
         for f in args.local_xml:
+            name = Path(f).name
             with open(f, "rb") as fh:
-                col.read(fh, HISTORY_START, f)
+                col.read(fh, HISTORY_START, f, current="instantane_ruptures" in name, snapshot="instantane" in name)
     else:
-        # Archives annuelles (immuables, mises en cache), puis année en cours, puis jours récents.
-        for year in range(HISTORY_START.year, now.year):
-            col.read(xml_from_zip(fetch(f"{BASE}/annee/{year}", cache, keep=True)), HISTORY_START, f"annee/{year}")
-        col.read(xml_from_zip(fetch(f"{BASE}/annee", cache, keep=False)), HISTORY_START, "annee (en cours)")
-        for d in range(3, 0, -1):
-            day = (now - timedelta(days=d)).strftime("%Y%m%d")
+        # Archives annuelles (immuables, mises en cache), puis année en cours, puis jours récents,
+        # puis flux instantané (prix, puis ruptures en cours).
+        names = [f"annee/{year}" for year in range(HISTORY_START.year, now.year)] + ["annee"]
+        names += [f"jour/{(now - timedelta(days=d)).strftime('%Y%m%d')}" for d in range(3, 0, -1)]
+        names += ["jour", "instantane", "instantane_ruptures"]
+        for name in names:
             try:
-                col.read(xml_from_zip(fetch(f"{BASE}/jour/{day}", cache, keep=False)), HISTORY_START, f"jour/{day}")
+                data = fetch(f"{BASE}/{name}", cache, keep=name.startswith("annee/"))
             except Exception as e:  # noqa: BLE001
-                print(f"  jour/{day} indisponible : {e}")
-        col.read(xml_from_zip(fetch(f"{BASE}/jour", cache, keep=False)), HISTORY_START, "jour (aujourd'hui)")
-        col.read(xml_from_zip(fetch(f"{BASE}/instantane", cache, keep=False)), HISTORY_START, "instantane")
+                if not name.startswith("jour/"):
+                    raise
+                print(f"  {name} indisponible : {e}")
+                continue
+            current = name == "instantane_ruptures"
+            col.read(xml_from_zip(data), HISTORY_START, name, current=current, snapshot=name.startswith("instantane"))
+            sources.append(name)
 
     sid, ts, pr = col.arrays()
     ts_max = int(ts.max()) if len(ts) else minutes(now)
@@ -274,11 +451,11 @@ def main() -> None:
     now = min(now, from_minutes(ts_max)).replace(second=0)
     print(f"{len(ts)} prix gazole retenus, dernier à {from_minutes(ts_max)}", flush=True)
 
-    # Stations de métropole avec coordonnées
+    # Stations de métropole (le département vient du code postal ; les coordonnées ne servent qu'à la carte)
     stations, deps = [], []
     for pid, m in col.meta.items():
         d = departement(m.get("cp"))
-        if d and "lat" in m:
+        if d:
             stations.append(pid)
             deps.append(d)
     order = np.argsort(stations)
@@ -290,12 +467,36 @@ def main() -> None:
     keep = np.isin(sid, stations)
     sid, ts, pr = sid[keep], ts[keep], pr[keep]
 
+    # Fautes de saisie : prix corrigés ensuite, puis prix trop bas, puis à nouveau prix corrigés
+    # (une faute peut en cacher une autre : 2,159 € → 1,555 € → 2,555 € → 2,155 €)
+    keep = drop_spikes(sid, ts, pr)
+    n_spikes = int(np.sum(~keep))
+    sid, ts, pr = sid[keep], ts[keep], pr[keep]
+    keep = drop_low_outliers(sid, ts, pr, stations, now)
+    n_low = int(np.sum(~keep))
+    sid, ts, pr = sid[keep], ts[keep], pr[keep]
+    keep = drop_spikes(sid, ts, pr)
+    n_spikes += int(np.sum(~keep))
+    sid, ts, pr = sid[keep], ts[keep], pr[keep]
+    print(f"Fautes de saisie écartées : {n_spikes} prix corrigés ensuite, {n_low} prix anormalement bas", flush=True)
+
+    # Ruptures et fermetures
+    excl, excl_stats = exclusion_intervals(col, sid, ts, stations, minutes(now))
+    print(f"Intervalles d'exclusion : {dict(excl_stats)}", flush=True)
+    if args.dump_events:
+        np.savez_compressed(
+            args.dump_events, sid=sid, ts=ts, pr=pr, stations=stations, deps=deps,
+            excl_rows=excl[0], excl_starts=excl[1], excl_ends=excl[2],
+            now=minutes(now),
+            stats=json.dumps({"spikes": n_spikes, "low": n_low, "excl": dict(excl_stats), "sources": sources}),
+        )
+
     pers = periods(now)
     series: dict = {}
     deltas: dict = {}
     for key, p in pers.items():
         pts_m = np.asarray([minutes(t) for t in p["points"]], dtype=np.int64)
-        mat = price_matrix(sid, ts, pr, stations, pts_m)
+        mat = price_matrix(sid, ts, pr, stations, pts_m, excl)
         s = {"FR": aggregate(mat)}
         for r in REGIONS:
             s[f"R{r}"] = aggregate(mat[regs == r])
@@ -316,8 +517,8 @@ def main() -> None:
     has = (last_idx >= 0) & (sid[np.clip(last_idx, 0, None)] == stations)
     stations_out = {
         "id": stations.tolist(),
-        "lat": [col.meta[i]["lat"] for i in stations.tolist()],
-        "lon": [col.meta[i]["lon"] for i in stations.tolist()],
+        "lat": [col.meta[i].get("lat") for i in stations.tolist()],
+        "lon": [col.meta[i].get("lon") for i in stations.tolist()],
         "dep": deps.tolist(),
         "ville": [col.meta[i].get("ville", "") for i in stations.tolist()],
         "adresse": [col.meta[i].get("adresse", "") for i in stations.tolist()],
