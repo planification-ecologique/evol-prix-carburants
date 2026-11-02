@@ -39,6 +39,11 @@ jobs:
           cp site/* _site/
           du -sh _site/data/*
           du -sh _site/data/stations/* | sort -h | tail -3
+      - name: Vérification du fond de carte IGN (informative)
+        continue-on-error: true
+        run: |
+          curl -sS -o /dev/null -w "Plan IGN : HTTP %{http_code}, %{content_type}\n" \
+            "https://data.geopf.fr/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=GEOGRAPHICALGRIDSYSTEMS.PLANIGNV2&STYLE=normal&TILEMATRIXSET=PM&FORMAT=image/png&TILEMATRIX=6&TILEROW=22&TILECOL=32"
       - uses: actions/upload-pages-artifact@v3
         with:
           path: _site

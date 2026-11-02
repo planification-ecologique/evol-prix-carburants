@@ -3,6 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="color-scheme" content="light">
   <title>Évolution du prix du gazole</title>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
   <link rel="stylesheet" href="style.css">
@@ -61,7 +63,7 @@
       <li><strong>Pas de temps :</strong> à l'heure sur 48 h, à la journée sur 7 jours, 3 mois et depuis février 2026, à la semaine depuis janvier 2025. Chaque point est l'état des prix en début de pas (à minuit pour un pas journalier). Le dernier point correspond au dernier prix reçu.</li>
       <li><strong>Prix moyen et médian :</strong> ils sont calculés sur l'ensemble des stations actives de la zone, sans pondération par les volumes vendus, que les données ne fournissent pas.</li>
       <li><strong>Prix aberrants :</strong> les prix en dehors de <span data-k="price_range">1 à 3</span> €/L sont écartés.</li>
-      <li><strong>Évolution affichée sur la carte :</strong> c'est l'écart en c€/L entre le premier et le dernier point de la période. L'échelle de couleur est relative. Le vert marque les zones qui baissent le plus et le rouge celles qui baissent le moins ou augmentent. Les bornes de couleur sont les 5ᵉ et 95ᵉ centiles des zones affichées. À l'échelle France, la carte montre les départements pour situer les écarts.</li>
+      <li><strong>Évolution affichée sur la carte :</strong> c'est l'écart en €/L entre le premier et le dernier point de la période. La couleur est verte quand le prix baisse et rouge quand il monte. Elle est d'autant plus foncée que l'écart est grand, et presque blanche autour de zéro. La teinte la plus foncée correspond au 95ᵉ centile des écarts, en valeur absolue, des zones affichées. À l'échelle France, la carte montre les départements pour situer les écarts.</li>
       <li><strong>Couverture :</strong> France métropolitaine, y compris la Corse. Le département est déduit du code postal de la station. Les enseignes des distributeurs ne figurent pas dans les données publiques ; elles seront ajoutées plus tard depuis OpenStreetMap.</li>
     </ul>
   </section>
