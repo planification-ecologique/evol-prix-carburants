@@ -266,6 +266,37 @@
     });
     $("synth").querySelector("tbody").innerHTML = rows.join("");
     $("synth-note").textContent = `${meta.label}, pas de temps : ${meta.step}. Du ${meta.points[0].replace("T", " à ")} au ${meta.points[meta.points.length - 1].replace("T", " à ")}.`;
+    await drawCounts(isStation ? null : s);
+  }
+
+  // Nombre de stations de la zone et nombre de stations dont le prix a baissé d'au moins 0,05 / 0,10 / 0,15 / 0,20 €
+  const DROPS = [5, 10, 15, 20]; // en centimes, unité des écarts dans stations.json
+  async function drawCounts(s) {
+    const show = (on) => { $("counts").hidden = !on; $("counts-note").hidden = !on; };
+    if (!s) return show(false);
+    const sel = state.sel, p = state.period;
+    const st = D.stations || (await loadStations().then((x) => (D.stations ||= x)));
+    if (state.sel !== sel || state.period !== p) return; // la sélection a changé entre-temps
+    const inZone = (i) =>
+      sel.kind === "FR" || (sel.kind === "D" ? st.dep[i] === sel.code : D.meta.dep_to_reg[st.dep[i]] === sel.code);
+    const deltas = st.delta[p];
+    let comparable = 0;
+    const counts = DROPS.map(() => 0);
+    for (let i = 0; i < st.id.length; i++) {
+      if (!inZone(i) || deltas[i] == null) continue;
+      comparable++;
+      DROPS.forEach((d, k) => { if (deltas[i] <= -d) counts[k]++; });
+    }
+    const active = s.n[s.n.length - 1];
+    const pct = (k) => (comparable ? ((100 * k) / comparable).toFixed(1).replace(".", ",") + " %" : "–");
+    const nf = (x) => x.toLocaleString("fr-FR");
+    $("counts").querySelector("tbody").innerHTML =
+      `<tr><td>Actives en fin de période</td><td>${nf(active)}</td><td></td></tr>` +
+      `<tr><td>Avec un prix au début et à la fin</td><td>${nf(comparable)}</td><td>100 %</td></tr>` +
+      DROPS.map((d, k) => `<tr><td>Baisse d'au moins ${fmtPrice(d / 100)}</td><td>${nf(counts[k])}</td><td>${pct(counts[k])}</td></tr>`).join("");
+    $("counts-note").textContent =
+      "Les pourcentages portent sur les stations qui ont un prix au début et à la fin de la période.";
+    show(true);
   }
 
   // ------------------------------------------------------------------ rendu
