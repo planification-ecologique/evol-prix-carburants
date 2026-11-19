@@ -33,6 +33,9 @@ for i in range(40):
         out.append(f'<prix nom="Gazole" id="1" maj="{t:%Y-%m-%dT%H:%M:%S}" valeur="{v:.3f}"/>')
         last = (t, v)
         out.append(f'<prix nom="SP95" id="2" maj="{t:%Y-%m-%dT%H:%M:%S}" valeur="{p + 0.1:.3f}"/>')
+        out.append(f'<prix nom="E10" id="5" maj="{t:%Y-%m-%dT%H:%M:%S}" valeur="{p + 0.05 + (1.0 if i == 11 and k == 40 else 0):.3f}"/>')
+        if i % 3:  # une station sur trois ne vend pas de SP98
+            out.append(f'<prix nom="SP98" id="6" maj="{t:%Y-%m-%dT%H:%M:%S}" valeur="{p + 0.15:.3f}"/>')
         t += timedelta(hours=random.randint(6, 96))
         p += random.uniform(-0.02, 0.019)
         k += 1
@@ -47,6 +50,8 @@ for i in range(40):
     if i == 5:  # fermeture vide (cas le plus fréquent dans les flux) et rupture d'un autre carburant
         out.append('<fermeture/>')
         out.append('<rupture id="2" nom="SP95" debut="2026-10-01T08:00:00" fin="" type="temporaire"/>')
+    if i == 12:  # rupture de SP95-E10 seulement, du 1er au 10 octobre 2026
+        out.append('<rupture id="5" nom="E10" debut="2026-10-01T08:00:00" fin="2026-10-10T08:00:00" type="temporaire"/>')
     out.append("</pdv>")
     if i == 7:
         continue  # absente du flux instantané : ne doit pas compter au dernier point
@@ -57,6 +62,15 @@ for i in range(40):
         snap.append(f'<prix nom="Gazole" id="1" maj="{end:%Y-%m-%d %H:%M:%S}" valeur="{p - 1.0:.3f}"/>')
     else:
         snap.append(f'<prix nom="Gazole" id="1" maj="{last[0]:%Y-%m-%d %H:%M:%S}" valeur="{last[1]:.3f}"/>')
+    if i == 13:  # rupture de SP98 en cours
+        snap.append('<rupture id="6" nom="SP98" debut="2026-11-01 18:00:00" fin="" type="temporaire"/>')
+    elif i == 14:  # rupture de SP95-E10 en cours, commencée après le dernier prix reçu (13 h), prix encore affiché
+        snap.append('<rupture id="5" nom="E10" debut="2026-11-02 13:30:00" fin="" type="temporaire"/>')
+        snap.append(f'<prix nom="E10" id="5" maj="{last[0]:%Y-%m-%d %H:%M:%S}" valeur="{last[1] + 0.05:.3f}"/>')
+    else:
+        snap.append(f'<prix nom="E10" id="5" maj="{last[0]:%Y-%m-%d %H:%M:%S}" valeur="{last[1] + 0.05:.3f}"/>')
+        if i % 3:
+            snap.append(f'<prix nom="SP98" id="6" maj="{last[0]:%Y-%m-%d %H:%M:%S}" valeur="{last[1] + 0.15:.3f}"/>')
     snap.append("</pdv>")
 out.append("</pdv_liste>")
 open(sys.argv[1], "w", encoding="iso-8859-1").write("\n".join(out))

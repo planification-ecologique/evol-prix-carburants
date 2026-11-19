@@ -11,7 +11,7 @@ permissions:
 jobs:
   audit:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -24,8 +24,10 @@ jobs:
           key: archives-v1-audit
           restore-keys: archives-v1-
       - name: Calcul des données
-        run: python pipeline/build.py --out _site/data --cache .cache --dump-events events.npz --snapshot flux
-      - name: Audit (relit les mêmes flux et refait tout le calcul indépendamment)
+        run: python pipeline/build.py --out _site/data --cache .cache --dump-events "events-{fuel}.npz" --snapshot flux
+      - name: Audit de chaque carburant (relit les mêmes flux et refait tout le calcul indépendamment)
         run: |
-          python pipeline/audit.py --data _site/data --cache .cache --events events.npz --snapshot flux | tee audit.md
-          cat audit.md >> "$GITHUB_STEP_SUMMARY"
+          for fuel in gazole e10 sp98; do
+            python pipeline/audit.py --fuel "$fuel" --data _site/data --cache .cache --events "events-$fuel.npz" --snapshot flux | tee "audit-$fuel.md"
+            cat "audit-$fuel.md" >> "$GITHUB_STEP_SUMMARY"
+          done

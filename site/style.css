@@ -37,6 +37,12 @@ h2 { font-size: 17px; margin: 0; }
 }
 .seg button:hover { color: var(--ink); }
 .seg button[aria-checked="true"] { background: var(--accent); color: #fff; }
+.seg-sm button { font-size: 13px; padding: 3px 9px; }
+.dates { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; color: var(--ink-2); font-size: 14px; }
+.dates input {
+  font: inherit; color: var(--ink); background: var(--surface); border: 1px solid var(--line);
+  border-radius: 8px; padding: 5px 8px; margin-left: 4px;
+}
 
 main { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 16px; }
 @media (max-width: 900px) { main { grid-template-columns: 1fr; } }

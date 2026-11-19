@@ -1,15 +1,16 @@
-# Évolution du prix du gazole
+# Évolution du prix des carburants
 
-Page web qui montre l'évolution du prix du gazole dans les stations-service de France métropolitaine. Elle s'appuie sur les [données ouvertes de prix-carburants.gouv.fr](https://www.prix-carburants.gouv.fr/rubrique/opendata/), sous Licence Ouverte 2.0.
+Page web qui montre l'évolution du prix du gazole, du SP95-E10 et du SP98 dans les stations-service de France métropolitaine. Elle s'appuie sur les [données ouvertes de prix-carburants.gouv.fr](https://www.prix-carburants.gouv.fr/rubrique/opendata/), sous Licence Ouverte 2.0.
 
-- Périodes : 48 h, 7 jours, 3 mois, depuis février 2026, depuis janvier 2025.
+- Carburants : gazole, SP95-E10, SP98 (sélecteur ; lien direct avec `#e10` ou `#sp98`). Chacun est calculé séparément, avec les mêmes règles.
+- Période : date de début et date de fin libres depuis le 1er janvier 2025 (par défaut les 7 derniers jours), avec des raccourcis 48 h, 7 jours, 3 mois, depuis février 2026, depuis janvier 2025. Points horaires sur les 3 derniers jours, journaliers sinon.
 - Échelles : France, région, département, station (cliquables sur la carte).
 - Indicateurs : prix moyen et prix médian, avec une courbe et un tableau de synthèse.
 - Carte colorée selon l'évolution sur la période : vert pour les plus fortes baisses, rouge pour les plus faibles baisses ou les hausses.
 
 ## Fonctionnement
 
-- `pipeline/build.py` télécharge les flux XML (archives annuelles, année en cours, jours récents, flux instantané). Il en extrait les prix du gazole, puis calcule des fichiers JSON statiques dans `_site/data/` : agrégats par période et par zone, évolution par station, historique brut par département.
+- `pipeline/build.py` télécharge les flux XML (archives annuelles, année en cours, jours récents, flux instantané). Il en extrait les prix de chaque carburant suivi (liste `FUELS`), puis calcule des fichiers JSON statiques : `_site/data/meta.json` (commun) et, dans `_site/data/<carburant>/`, les agrégats par zone sur deux grilles, chaque jour à minuit depuis 2025 et chaque heure sur 3 jours (`series.json`), la liste des stations avec leur dernier prix (`stations.json`), et le prix de chaque station à chaque point (`prix-jour.bin.gz`, `prix-heure.bin.gz`, entiers 16 bits compressés). La page découpe dans ces grilles la période choisie.
 - `site/` contient la page (HTML, CSS, JS sans étape de build, avec Leaflet et Chart.js chargés depuis un CDN).
 - `.github/workflows/update.yml` recalcule les données toutes les heures et publie le site sur GitHub Pages. Pour l'activer : Settings › Pages › Source : **GitHub Actions**.
 
@@ -19,13 +20,13 @@ Les hypothèses de calcul sont détaillées en bas de la page.
 
 - Prix hors de la plage 1 à 3 €/L écartés ; doublons (même station, même horodatage) supprimés.
 - Fautes de saisie écartées : un ou deux prix qui s'écartent d'au moins 0,30 € du prix précédent et que la station corrige dans les 72 heures par un prix plus proche du prix précédent (par exemple 2,25 € → 1,25 € → 2,25 €, ou 2,36 € → 2,99 € → 2,30 €) ; et prix inférieur de plus de 0,50 € à la médiane nationale du jour. La station garde son prix valide précédent.
-- Ruptures de gazole et fermetures : la station n'est pas comptée pendant ces périodes (balises `rupture` et `fermeture` des flux, et ruptures en cours du flux instantané). Sans date de fin, la période s'arrête au prix suivant publié par la station.
-- Dernier point : seules les stations qui affichent un prix gazole dans le flux instantané sont comptées (même périmètre que l'export officiel de data.economie.gouv.fr).
+- Ruptures du carburant et fermetures : la station n'est pas comptée pendant ces périodes (balises `rupture` et `fermeture` des flux, et ruptures en cours du flux instantané). Sans date de fin, la période s'arrête au prix suivant publié par la station.
+- Dernier point : seules les stations qui affichent un prix pour ce carburant dans le flux instantané sont comptées (même périmètre que l'export officiel de data.economie.gouv.fr).
 - Stations sans coordonnées valides : comptées dans les statistiques, absentes de la carte.
 
 ## Audit de la qualité des données
 
-`.github/workflows/audit.yml` (lancement manuel, ou à chaque push sur une branche `claude/audit-…`) recalcule les données, puis `pipeline/audit.py` relit les mêmes flux et refait toute la chaîne de calcul avec une implémentation indépendante. Il compare le résultat aux fichiers publiés, à l'export officiel de data.economie.gouv.fr et aux prix hebdomadaires publiés par le ministère. Le rapport s'affiche dans le résumé de l'exécution (onglet Actions).
+`.github/workflows/audit.yml` (lancement manuel, ou à chaque push sur une branche `claude/audit-…`) recalcule les données, puis `pipeline/audit.py` (un passage par carburant, `--fuel`) relit les mêmes flux et refait toute la chaîne de calcul avec une implémentation indépendante. Il compare le résultat aux fichiers publiés, à l'export officiel de data.economie.gouv.fr et aux prix hebdomadaires publiés par le ministère (gazole seulement pour l'instant). Le rapport s'affiche dans le résumé de l'exécution (onglet Actions).
 
 ## En local
 
@@ -39,6 +40,6 @@ Test sans réseau, sur un flux synthétique :
 
 ```bash
 python tests/make_fixture.py /tmp/fixture.xml
-python pipeline/build.py --local-xml /tmp/fixture.xml --out /tmp/out/data --now 2026-11-02T14:00 --no-geojson --dump-events /tmp/events.npz
-python pipeline/audit.py --local-xml /tmp/fixture.xml --data /tmp/out/data --events /tmp/events.npz
+python pipeline/build.py --local-xml /tmp/fixture.xml --out /tmp/out/data --now 2026-11-02T14:00 --no-geojson --dump-events '/tmp/events-{fuel}.npz'
+python pipeline/audit.py --fuel e10 --local-xml /tmp/fixture.xml --data /tmp/out/data --events /tmp/events-e10.npz
 ```
