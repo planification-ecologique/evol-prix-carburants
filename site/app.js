@@ -368,7 +368,18 @@
     const show = (on) => { $("counts").hidden = !on; $("counts-note").hidden = !on; };
     if (!S) return show(false);
     const sel = state.sel, r = R;
-    const data = await Promise.all(FUELS.map((k) => Promise.all([loadStations(k), loadMatrix(k, r.grid)])));
+    let data;
+    try {
+      data = await Promise.all(FUELS.map((k) => Promise.all([loadStations(k), loadMatrix(k, r.grid)])));
+    } catch (e) {
+      // le reste de la page reste utilisable
+      console.error(e);
+      if (state.sel !== sel || R !== r) return;
+      $("counts").hidden = true;
+      $("counts-note").hidden = false;
+      $("counts-note").textContent = `Tableau des baisses indisponible (${e.message}).`;
+      return;
+    }
     if (state.sel !== sel || R !== r) return; // la sélection a changé entre-temps
     const cols = FUELS.map((k, j) => {
       const [st, M] = data[j];
@@ -435,24 +446,34 @@
     (promises[fuel + "/series"] ||= get(`${fuel}/series.json`).then((x) => (FD[fuel].series = x)));
   const loadStations = (fuel) =>
     (promises[fuel + "/stations"] ||= get(`${fuel}/stations.json`).then((x) => (FD[fuel].stations = x)));
-  // Prix de chaque station à chaque point de la grille (voir write_matrix dans pipeline/build.py)
-  const loadMatrix = (fuel, grid) =>
-    (promises[`${fuel}/prix-${grid}`] ||= fetch(`data/${fuel}/prix-${grid}.bin.gz${DV}`).then(async (r) => {
-      if (!r.ok) throw new Error(`prix-${grid}`);
-      let buf = new Uint8Array(await r.arrayBuffer());
-      // fichier gzip, sauf si le serveur l'a déjà décompressé à la volée
-      if (buf[0] === 0x1f && buf[1] === 0x8b) {
-        const stream = new Blob([buf]).stream().pipeThrough(new DecompressionStream("gzip"));
-        buf = new Uint8Array(await new Response(stream).arrayBuffer());
-      }
-      const d = new Int16Array(buf.buffer, buf.byteOffset, buf.byteLength >> 1);
-      const nS = D.meta.n_stations, out = new Uint16Array(d.length);
-      for (let i = 0; i < nS && i < d.length; i++) out[i] = d[i];
-      for (let j = nS; j < d.length; j++) out[j] = out[j - nS] + d[j];
-      const M = { nS, at: (k, i) => out[k * nS + i] }; // 0 = pas de prix
-      FD[fuel].matrix[grid] = M;
-      return M;
-    }));
+  // Prix de chaque station à chaque point de la grille (voir write_matrix dans pipeline/build.py).
+  // Fichier binaire compressé en « deflate » brut, sans en-tête gzip ni extension .gz : certains pare-feu
+  // d'entreprise bloquent les fichiers .gz (erreur « prix-jour » vue sur un poste).
+  async function fetchMatrix(fuel, grid) {
+    const name = `${fuel}/prix-${grid}.bin`;
+    let r;
+    try {
+      r = await fetch(`data/${name}${DV}`);
+    } catch (e) {
+      throw new Error(`${name} : ${e.message}`);
+    }
+    if (!r.ok) throw new Error(`${name} : HTTP ${r.status}`);
+    if (typeof DecompressionStream === "undefined") throw new Error("navigateur trop ancien (DecompressionStream)");
+    const stream = r.body.pipeThrough(new DecompressionStream("deflate-raw"));
+    const buf = new Uint8Array(await new Response(stream).arrayBuffer());
+    const d = new Int16Array(buf.buffer, buf.byteOffset, buf.byteLength >> 1);
+    const nS = D.meta.n_stations, out = new Uint16Array(d.length);
+    for (let i = 0; i < nS && i < d.length; i++) out[i] = d[i];
+    for (let j = nS; j < d.length; j++) out[j] = out[j - nS] + d[j];
+    const M = { nS, at: (k, i) => out[k * nS + i] }; // 0 = pas de prix
+    FD[fuel].matrix[grid] = M;
+    return M;
+  }
+  const loadMatrix = (fuel, grid) => {
+    const key = `${fuel}/prix-${grid}`;
+    // en cas d'échec, on retentera au prochain affichage
+    return (promises[key] ||= fetchMatrix(fuel, grid).catch((e) => { delete promises[key]; throw e; }));
+  };
 
   // stations actives = prix déclaré dans les 30 derniers jours (dernier point de la série France)
   function showMaj() {

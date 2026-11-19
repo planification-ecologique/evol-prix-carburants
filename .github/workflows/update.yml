@@ -71,3 +71,12 @@ jobs:
     steps:
       - id: deployment
         uses: actions/deploy-pages@v4
+      # Vérifie que chaque fichier de données publié répond bien (code HTTP, type, taille)
+      - name: Vérification du site publié (informative)
+        continue-on-error: true
+        run: |
+          sleep 20
+          base="${{ steps.deployment.outputs.page_url }}"
+          for f in index.html app.js data/meta.json data/gazole/series.json data/gazole/stations.json data/gazole/prix-jour.bin data/gazole/prix-heure.bin; do
+            curl -sS -o /dev/null -w "$f : HTTP %{http_code}, %{content_type}, %{size_download} octets\n" -H "Accept-Encoding: gzip" "${base}${f}"
+          done
