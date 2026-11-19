@@ -42,10 +42,17 @@ h2 { font-size: 17px; margin: 0; }
 .seg button:hover { color: var(--ink); }
 .seg button[aria-checked="true"] { background: var(--accent); color: #fff; }
 .seg-sm button { font-size: 13px; padding: 3px 9px; }
-.dates { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; color: var(--ink-2); font-size: 14px; }
+.shortcuts { display: flex; flex-wrap: wrap; gap: 6px; }
+.shortcuts button {
+  border: 1px solid var(--line); background: var(--surface); color: var(--ink-2); font: inherit; font-size: 13px;
+  padding: 4px 12px; border-radius: 8px; cursor: pointer;
+}
+.shortcuts button:hover { color: var(--ink); border-color: var(--ink-3); }
+.shortcuts button[aria-checked="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+.dates { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 2px; color: var(--ink-2); font-size: 14px; }
 .dates input {
   font: inherit; color: var(--ink); background: var(--surface); border: 1px solid var(--line);
-  border-radius: 8px; padding: 5px 8px; margin-left: 4px;
+  border-radius: 8px; padding: 5px 8px;
 }
 
 main { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 16px; }
