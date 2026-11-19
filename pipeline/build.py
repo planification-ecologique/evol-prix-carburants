@@ -9,8 +9,8 @@ Sources (open data prix-carburants.gouv.fr, Licence Ouverte 2.0) :
 Toutes les dates du flux sont en heure de Paris : on travaille en heure locale
 « naïve », convertie en minutes depuis 1970.
 
-Sorties : data/meta.json (commun), puis pour chaque carburant data/<carburant>/series.json,
-stations.json et stations/<département>.json.
+Sorties : data/meta.json (commun), puis pour chaque carburant data/<carburant>/series.json (agrégats par zone),
+stations.json (stations, dernier prix) et prix-jour.bin.gz, prix-heure.bin.gz (prix de chaque station à chaque point).
 
 Usage : python pipeline/build.py --out _site/data [--cache .cache] [--now 2026-11-02T14:00]
         python pipeline/build.py --local-xml fichier1.xml ... (tests, sans réseau)
@@ -365,8 +365,14 @@ def exclusion_intervals(col: Collector, fuel: str, sid, ts, stations, now_m: int
 # --------------------------------------------------------------------------- périodes
 
 
+HOURLY_DAYS = 3  # points horaires sur les 3 derniers jours (de minuit J-3 à maintenant)
+
+
 def periods(now: datetime):
-    """Points de calcul de chaque période : début, fins de pas, puis « maintenant »."""
+    """Les deux grilles de calcul, dans lesquelles la page découpe la période choisie (date de début, date de fin) :
+    - « jour » : chaque minuit depuis le 1er janvier 2025, puis « maintenant » ;
+    - « heure » : chaque heure depuis minuit il y a HOURLY_DAYS jours, puis « maintenant ».
+    """
     today = now.replace(hour=0, minute=0, second=0, microsecond=0)
 
     def series(start, step, label, unit):
@@ -377,14 +383,25 @@ def periods(now: datetime):
         pts.append(now)
         return {"label": label, "step": unit, "points": pts}
 
-    h48_start = (now - timedelta(hours=48)).replace(minute=0, second=0, microsecond=0)
     return {
-        "48h": series(h48_start, timedelta(hours=1), "48 dernières heures", "heure"),
-        "7j": series(today - timedelta(days=7), timedelta(days=1), "7 derniers jours", "jour"),
-        "3m": series(today - timedelta(days=91), timedelta(days=1), "3 derniers mois", "jour"),
-        "fev26": series(datetime(2026, 2, 1), timedelta(days=1), "Depuis février 2026", "jour"),
-        "2025": series(datetime(2025, 1, 1), timedelta(days=7), "Depuis janvier 2025", "semaine"),
+        "jour": series(datetime(2025, 1, 1), timedelta(days=1), "Chaque jour à minuit depuis janvier 2025", "jour"),
+        "heure": series(today - timedelta(days=HOURLY_DAYS), timedelta(hours=1), f"Chaque heure sur les {HOURLY_DAYS} derniers jours", "heure"),
     }
+
+
+def write_matrix(path: Path, mat) -> None:
+    """Prix de chaque station à chaque point (millièmes d'euro, 0 = pas de prix), compressé pour la page.
+
+    Format : entiers 16 bits signés, petit-boutiste, ligne par ligne (un point = une ligne de toutes les stations,
+    dans l'ordre de stations.json). La première ligne contient les prix ; chaque ligne suivante contient l'écart
+    avec la ligne précédente (presque toujours 0, d'où une très bonne compression gzip).
+    """
+    m = np.where(np.isnan(mat), 0, np.rint(mat * 1000)).astype(np.int32).T  # points × stations
+    d = np.diff(m, axis=0, prepend=np.zeros((1, m.shape[1]), np.int32))
+    assert np.abs(d).max(initial=0) < 32768
+    import gzip
+
+    path.write_bytes(gzip.compress(d.astype("<i2").tobytes(), compresslevel=9, mtime=0))
 
 
 def price_matrix(sid, ts, pr, stations, points_m, excl=None):
@@ -436,7 +453,7 @@ def aggregate(mat):
 def build_fuel(col, fuel, sid, ts, pr, stations, deps, now, pers, out: Path, dump_path, sources) -> dict:
     """Nettoie les prix d'un carburant et écrit ses fichiers dans out/. Renvoie ses métadonnées."""
     name = FUELS[fuel][2]
-    (out / "stations").mkdir(parents=True, exist_ok=True)
+    out.mkdir(parents=True, exist_ok=True)
     regs = np.asarray([DEP_TO_REG[d] for d in deps])
 
     # Ne garder que les événements des stations retenues
@@ -468,7 +485,6 @@ def build_fuel(col, fuel, sid, ts, pr, stations, deps, now, pers, out: Path, dum
         )
 
     series: dict = {}
-    deltas: dict = {}
     for key, p in pers.items():
         pts_m = np.asarray([minutes(t) for t in p["points"]], dtype=np.int64)
         mat = price_matrix(sid, ts, pr, stations, pts_m, excl)
@@ -478,8 +494,7 @@ def build_fuel(col, fuel, sid, ts, pr, stations, deps, now, pers, out: Path, dum
         for d in sorted(set(deps)):
             s[f"D{d}"] = aggregate(mat[deps == d])
         series[key] = s
-        delta = (mat[:, -1] - mat[:, 0]) * 100  # c€/L
-        deltas[key] = [None if np.isnan(x) else round(float(x), 1) for x in delta]
+        write_matrix(out / f"prix-{key}.bin.gz", mat)
         fr = s["FR"]
         print(
             f"  {name}, période {key}: {len(pts_m)} points, {int(np.sum(~np.isnan(mat[:, -1])))} stations actives, "
@@ -499,20 +514,7 @@ def build_fuel(col, fuel, sid, ts, pr, stations, deps, now, pers, out: Path, dum
         "adresse": [col.meta[i].get("adresse", "") for i in stations.tolist()],
         "prix": [round(pr[j] / 1000, 3) if h else None for j, h in zip(last_idx, has)],
         "maj": [from_minutes(ts[j]).strftime("%Y-%m-%dT%H:%M") if h else None for j, h in zip(last_idx, has)],
-        "delta": deltas,
     }
-
-    # Historique brut par département (chargé au clic sur une station) : temps delta-encodés
-    for d in sorted(set(deps)):
-        sel = stations[deps == d]
-        out_d = {}
-        for pid in sel.tolist():
-            a, b = np.searchsorted(sid, [pid, pid + 1])
-            if a == b:
-                continue
-            t = ts[a:b]
-            out_d[str(pid)] = [np.diff(t, prepend=0).tolist(), pr[a:b].tolist()]
-        (out / "stations" / f"{d}.json").write_text(json.dumps(out_d, separators=(",", ":")))
 
     def dump(fname, obj):
         (out / fname).write_text(json.dumps(obj, ensure_ascii=False, separators=(",", ":")))

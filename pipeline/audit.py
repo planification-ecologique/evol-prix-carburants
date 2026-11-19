@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import gzip
 import io
 import json
 import math
@@ -512,7 +513,7 @@ def s_couverture(C):
     check(not missing, f"Couverture : aucun jour sans données du {dt_of(days[0] * DAY).date()} au {dt_of(days[-1] * DAY).date()}.")
     last_ev = max(t for (_pid, t) in C.last)
     p(f"- Dernier prix reçu : {ts_txt(last_ev)} ; dernier point du calcul : {ts_txt(C.now_m)}.")
-    for key in ("fev26", "2025"):
+    for key in ("jour", "heure"):
         n = C.naive[key]["FR"]["n"]
         pts = C.meta["periods"][key]["points"]
         jumps = [(pts[i], n[i - 1], n[i]) for i in range(1, len(n)) if abs(n[i] - n[i - 1]) > 0.03 * max(n[i - 1], 1)]
@@ -539,18 +540,19 @@ def s_recalcul(C):
     p(f"- Valeurs comparées (nombre de stations, médiane, moyenne) pour chaque période, chaque point et chaque zone (France, 13 régions, 96 départements) : {nf(n_cmp)} points ; écarts : {n_bad}.")
     for w in worst:
         p(f"  - {w}")
-    check(n_bad == 0, f"Agrégats publiés (series.json) : identiques au recalcul indépendant sur {nf(n_cmp)} points × 3 valeurs (5 périodes, France, régions, départements).")
-    # écarts par station (carte et tableau des baisses)
+    check(n_bad == 0, f"Agrégats publiés (series.json) : identiques au recalcul indépendant sur {nf(n_cmp)} points × 3 valeurs (grilles jour et heure, France, régions, départements).")
+    # prix de chaque station à chaque point (carte, tableau des baisses, courbe d'une station)
     n_d = bad_d = 0
     for per in C.meta["periods"]:
-        first, last = C.vals[per][0], C.vals[per][-1]
-        for i, js in enumerate(C.js["delta"][per]):
-            n_d += 1
-            mine = None if first[i] is None or last[i] is None else (last[i] - first[i]) / 10
-            if (mine is None) != (js is None) or (mine is not None and abs(mine - js) > 0.051):
-                bad_d += 1
-    p(f"- Écarts par station (carte et tableau des baisses) : {nf(n_d)} valeurs comparées, {bad_d} différences.")
-    check(bad_d == 0, f"Évolution de chaque station sur chaque période (carte, tableau des baisses) : identique au recalcul ({nf(n_d)} valeurs).")
+        raw = gzip.decompress((C.data / FUEL / f"prix-{per}.bin.gz").read_bytes())
+        pub = np.cumsum(np.frombuffer(raw, dtype="<i2").astype(np.int64).reshape(len(C.vals[per]), -1), axis=0)
+        for k, row in enumerate(C.vals[per]):
+            for i, v in enumerate(row):
+                n_d += 1
+                if (v or 0) != pub[k, i]:
+                    bad_d += 1
+    p(f"- Prix de chaque station à chaque point (fichiers prix-*.bin.gz) : {nf(n_d)} valeurs comparées, {bad_d} différences.")
+    check(bad_d == 0, f"Prix de chaque station à chaque point (carte, tableau des baisses, courbe d'une station) : identiques au recalcul ({nf(n_d)} valeurs).")
     # dernier prix publié par station
     bad_p = 0
     for i, pid in enumerate(C.st_ids):
@@ -560,17 +562,19 @@ def s_recalcul(C):
             bad_p += 1
     p(f"- Dernier prix et date de chaque station : {bad_p} différences sur {nf(len(C.st_ids))}.")
     check(bad_p == 0, "Dernier prix et date de mise à jour de chaque station : identiques au recalcul.")
-    fr_ = C.naive["fev26"]["FR"]
+    fr_ = C.naive["jour"]["FR"]
     p(f"- Dernier point ({ts_txt(C.now_m)}) : {nf(fr_['n'][-1])} stations actives, médiane {fr(fr_['median'][-1])}, moyenne {fr(fr_['mean'][-1])}.")
-    last = sorted(v / 1000 for v in C.vals["fev26"][-1] if v is not None)
+    last = sorted(v / 1000 for v in C.vals["jour"][-1] if v is not None)
     q = [last[min(len(last) - 1, int(round(x * (len(last) - 1))))] for x in (0, 0.01, 0.05, 0.25, 0.5, 0.75, 0.95, 0.99, 1)]
     p(f"- Distribution des prix au dernier point (min, p1, p5, p25, p50, p75, p95, p99, max) : {[round(x, 3) for x in q]}")
     # tableau des baisses, France
-    for per in ("7j", "3m"):
-        first, lastv = C.vals[per][0], C.vals[per][-1]
+    pts = C.meta["periods"]["jour"]["points"]
+    for label, ndays in (("7 derniers jours", 7), ("3 derniers mois", 91)):
+        start = (dt_of(C.now_m).replace(hour=0, minute=0) - timedelta(days=ndays)).strftime("%Y-%m-%dT%H:%M")
+        first, lastv = C.vals["jour"][pts.index(start)], C.vals["jour"][-1]
         d = [(b - a) for a, b in zip(first, lastv) if a is not None and b is not None]
         cnt = [sum(1 for x in d if x <= -k) for k in (50, 100, 150, 200)]
-        p(f"- Tableau des baisses, France, {C.meta['periods'][per]['label']} : {nf(len(d))} stations avec un prix au début et à la fin ; baisse ≥ 0,05 € : {nf(cnt[0])} ({pct(cnt[0], len(d))}), ≥ 0,10 € : {nf(cnt[1])} ({pct(cnt[1], len(d))}), ≥ 0,15 € : {nf(cnt[2])} ({pct(cnt[2], len(d))}), ≥ 0,20 € : {nf(cnt[3])} ({pct(cnt[3], len(d))}).")
+        p(f"- Tableau des baisses, France, {label} : {nf(len(d))} stations avec un prix au début et à la fin ; baisse ≥ 0,05 € : {nf(cnt[0])} ({pct(cnt[0], len(d))}), ≥ 0,10 € : {nf(cnt[1])} ({pct(cnt[1], len(d))}), ≥ 0,15 € : {nf(cnt[2])} ({pct(cnt[2], len(d))}), ≥ 0,20 € : {nf(cnt[3])} ({pct(cnt[3], len(d))}).")
 
 
 def s_fautes(C):
@@ -616,11 +620,11 @@ def s_fautes(C):
         for _t, pid, k in sorted(lst, reverse=True)[:4]:
             m = R.meta.get(pid, {})
             p(f"  - {lab} : {pid} ({m.get('cp')} {m.get('ville')}, {'autoroute' if m.get('pop') == 'A' else 'route'}) : {ctx(pid, k, 1, 2)}")
-    pts = C.meta["periods"]["fev26"]["points"]
-    med = C.naive["fev26"]["FR"]["median"]
+    pts = C.meta["periods"]["jour"]["points"]
+    med = C.naive["jour"]["FR"]["median"]
     pop = [R.meta.get(pid, {}).get("pop", "") for pid in C.st_ids]
     cnt = Counter()
-    for k, row in enumerate(C.vals["fev26"]):
+    for k, row in enumerate(C.vals["jour"]):
         for i, v in enumerate(row):
             if v is None:
                 continue
@@ -632,17 +636,17 @@ def s_fautes(C):
                 cnt[("−0,50 à −0,40", lab)] += 1
             if dv > 0.5:
                 cnt[("> +0,50", lab)] += 1
-    p(f"- Après nettoyage, écarts à la médiane nationale (stations × jours, depuis février 2026) : {dict(cnt)}.")
+    p(f"- Après nettoyage, écarts à la médiane nationale (stations × jours, depuis janvier 2025) : {dict(cnt)}.")
     hi = Counter()
-    for k, row in enumerate(C.vals["fev26"]):
+    for k, row in enumerate(C.vals["jour"]):
         for i, v in enumerate(row):
             if v is not None and pop[i] != "A" and v / 1000 - med[k] > 0.5:
                 hi[i] += 1
     p("- Stations hors autoroute le plus souvent à plus de 0,50 € au-dessus de la médiane (jours, prix au dernier point) : "
-      + "; ".join(f"{C.st_ids[i]} {R.meta.get(C.st_ids[i], {}).get('ville')} {n} j {fr(None if C.vals['fev26'][-1][i] is None else C.vals['fev26'][-1][i] / 1000)}" for i, n in hi.most_common(10)))
+      + "; ".join(f"{C.st_ids[i]} {R.meta.get(C.st_ids[i], {}).get('ville')} {n} j {fr(None if C.vals['jour'][-1][i] is None else C.vals['jour'][-1][i] / 1000)}" for i, n in hi.most_common(10)))
     check(cnt[("< −0,50", "route")] + cnt[("< −0,50", "autoroute")] == 0 and resid == 0,
           f"Après nettoyage : {resid} faute de saisie corrigée ensuite restante et {cnt[('< −0,50', 'route')] + cnt[('< −0,50', 'autoroute')]} prix à plus de 0,50 € sous la médiane nationale.")
-    last = C.vals["fev26"][-1]
+    last = C.vals["jour"][-1]
     out = [(i, v) for i, v in enumerate(last) if v is not None and abs(v / 1000 - med[-1]) > 0.40]
     p(f"- Au dernier point, {len(out)} stations s'écartent de plus de 0,40 € de la médiane ({fr(med[-1])}) :")
     for i, v in out[:15]:
@@ -661,7 +665,7 @@ def s_impact(C):
     excl = excl_arrays(C.intervals, C.st_ids)
     p("| Période | Variante | Stations (dernier point) | Médiane (dernier point) | Moyenne (dernier point) | Écart max. médiane | Écart max. moyenne |")
     p("|---|---|---|---|---|---|---|")
-    for per in ("48h", "3m", "fev26", "2025"):
+    for per in ("heure", "jour"):
         pts = np.asarray([mins(datetime.fromisoformat(t)) for t in C.meta["periods"][per]["points"]], dtype=np.int64)
         res = {}
         for lab, arr, ex in (("brut", raw, None), ("sans fautes de saisie", typo, None), ("publié (+ ruptures et fermetures)", typo, excl)):
@@ -672,23 +676,23 @@ def s_impact(C):
             dm = np.nanmax(np.abs(md - ref[0]))
             da = np.nanmax(np.abs(mn - ref[1]))
             p(f"| {per} | {lab} | {nf(int(n[-1]))} | {fr(float(md[-1]))} | {fr(float(mn[-1]))} | {fr(float(dm))} | {fr(float(da))} |")
-            if lab == "brut" and per in ("fev26", "2025"):
+            if lab == "brut" and per == "jour":
                 C.notes.append(f"{per} : écart max. médiane le {C.meta['periods'][per]['points'][int(np.nanargmax(np.abs(md - ref[0])))]}, "
                                f"moyenne le {C.meta['periods'][per]['points'][int(np.nanargmax(np.abs(mn - ref[1])))]}")
-        if per == "fev26":
+        if per == "jour":
             nt, nr = res["sans fautes de saisie"][2], ref[2]
             top = np.argsort(-(nt - nr))[:6]
             C.notes.append("jours avec le plus de stations exclues (rupture, fermeture) : " + ", ".join(
                 f"{C.meta['periods'][per]['points'][int(i)]} {int(nt[i] - nr[i])} (médiane {fr(float(res['sans fautes de saisie'][0][i]))} → {fr(float(ref[0][i]))}, moyenne {fr(float(res['sans fautes de saisie'][1][i]))} → {fr(float(ref[1][i]))})" for i in top))
-        if per == "fev26":
+        if per == "jour":
             C.impact = {k: (float(np.nanmax(np.abs(v[0] - ref[0]))), float(np.nanmax(np.abs(v[1] - ref[1]))), float(np.mean(v[2] - ref[2]))) for k, v in res.items()}
     p()
     for note in C.notes:
         p(f"- {note}")
     b, t = C.impact["brut"], C.impact["sans fautes de saisie"]
-    p(f"- Depuis février 2026, le nettoyage complet déplace la médiane France d'au plus {fr(b[0])} et la moyenne d'au plus {fr(b[1])} ; "
+    p(f"- Depuis janvier 2025, le nettoyage complet déplace la médiane France d'au plus {fr(b[0])} et la moyenne d'au plus {fr(b[1])} ; "
       f"les ruptures et fermetures retirent en moyenne {t[2]:.0f} stations par jour.")
-    check(None, f"Effet du nettoyage depuis février 2026 : médiane France déplacée d'au plus {fr(b[0])}, moyenne d'au plus {fr(b[1])}.")
+    check(None, f"Effet du nettoyage depuis janvier 2025 : médiane France déplacée d'au plus {fr(b[0])}, moyenne d'au plus {fr(b[1])}.")
 
 
 def s_ruptures(C):
@@ -731,16 +735,16 @@ def s_ruptures(C):
             alt[pid].append((s, min(e, tl[i]) if i < len(tl) else e, k))
     ids = np.asarray(C.st_ids, dtype=np.int64)
     arr = to_arrays(C.clean, C.st_ids)
-    pts = np.asarray([mins(datetime.fromisoformat(t)) for t in C.meta["periods"]["fev26"]["points"]], dtype=np.int64)
+    pts = np.asarray([mins(datetime.fromisoformat(t)) for t in C.meta["periods"]["jour"]["points"]], dtype=np.int64)
     m1 = B.price_matrix(*arr, ids, pts, excl_arrays(C.intervals, C.st_ids))
     m2 = B.price_matrix(*arr, ids, pts, excl_arrays(alt, C.st_ids))
-    p(f"- Si un prix publié mettait fin à toute rupture ou fermeture : médiane France modifiée d'au plus {fr(float(np.nanmax(np.abs(np.nanmedian(m1, 0) - np.nanmedian(m2, 0)))))}, moyenne d'au plus {fr(float(np.nanmax(np.abs(np.nanmean(m1, 0) - np.nanmean(m2, 0)))))} depuis février 2026.")
+    p(f"- Si un prix publié mettait fin à toute rupture ou fermeture : médiane France modifiée d'au plus {fr(float(np.nanmax(np.abs(np.nanmedian(m1, 0) - np.nanmedian(m2, 0)))))}, moyenne d'au plus {fr(float(np.nanmax(np.abs(np.nanmean(m1, 0) - np.nanmean(m2, 0)))))} depuis janvier 2025.")
     # effet de l'alignement sur le flux instantané au dernier point
     gone = [pid for pid, lst in C.intervals.items() for s, e, k in lst if k == "absente du flux instantané"]
     no_snap = {pid: [iv for iv in lst if iv[2] != "absente du flux instantané"] for pid, lst in C.intervals.items()}
     without = Prices(C.clean, no_snap)
     v_without = [without.at(pid, C.now_m) for pid in C.st_ids]
-    v_with = C.vals["fev26"][-1]
+    v_with = C.vals["jour"][-1]
     n0, md0, mn0 = agg(v_without)
     n1, md1, mn1 = agg(v_with)
     ruptured_open = sum(1 for pid in gone if any(k.startswith("rupture") and e == C.now_m for s, e, k in C.intervals[pid]))
@@ -764,7 +768,7 @@ def s_ruptures(C):
 
 def s_geo(C):
     R = C.R
-    act = [i for i, v in enumerate(C.vals["fev26"][-1]) if v is not None]
+    act = [i for i, v in enumerate(C.vals["jour"][-1]) if v is not None]
     cnt = Counter(C.js["dep"][i] for i in act)
     p(f"- Départements avec le moins de stations actives : {sorted((v, k) for k, v in cnt.items())[:8]}")
     p(f"- Corse : 2A = {cnt.get('2A', 0)}, 2B = {cnt.get('2B', 0)}.")
@@ -855,9 +859,9 @@ def s_api(C):
           f"{len(typo)} faute(s) de saisie écartée(s) chez nous, {len(timing)} décalage(s) de mise à jour, {len(other)} écart inexpliqué.")
     cutoff = C.now_m - STALE
     A = {i for i, (cp, v, dt) in api.items() if dep_from_cp(cp) and dt and mins(dt) >= cutoff and 1 <= v <= 3}
-    S = {pid for pid, v in zip(C.st_ids, C.vals["fev26"][-1]) if v is not None}
+    S = {pid for pid, v in zip(C.st_ids, C.vals["jour"][-1]) if v is not None}
     na, ma, aa = agg([int(round(api[i][1] * 1000)) for i in A])
-    ns, ms, as_ = agg([v for v in C.vals["fev26"][-1]])
+    ns, ms, as_ = agg([v for v in C.vals["jour"][-1]])
     p(f"- Stations actives au même instant : API {nf(len(A))} (métropole, prix de moins de 30 jours), nous {nf(len(S))} ; communes : {nf(len(A & S))} ; seulement API : {len(A - S)} ; seulement nous : {len(S - A)}.")
     p(f"- Médiane / moyenne : API {fr(ma)} / {fr(aa)} ; nous {fr(ms)} / {fr(as_)}.")
     only_us = sorted(S - A)
@@ -902,8 +906,8 @@ def s_dgec(C):
 
 
 def s_complements(C):
-    pts = C.meta["periods"]["fev26"]["points"]
-    rows = C.vals["fev26"]
+    pts = C.meta["periods"]["jour"]["points"]
+    rows = C.vals["jour"]
     last = [v for v in rows[-1] if v is not None]
     cap = Counter(last).most_common(1)[0][0] if last else 2250  # prix le plus fréquent (2,250 € pour le gazole)
     cap_txt = fr(cap / 1000)
@@ -922,7 +926,7 @@ def s_complements(C):
         check(None, f"La médiane nationale tombe dans le groupe des {nf(n_cap)} stations affichant exactement {cap_txt} ({pct(n_cap, len(xs))}) : elle reste collée à ce prix tant qu'il couvre le milieu de la distribution.")
     p("- Moyennes hebdomadaires France (lundi → dimanche, moyenne des valeurs journalières à minuit) :")
     weeks = defaultdict(list)
-    fr_ = C.naive["fev26"]["FR"]
+    fr_ = C.naive["jour"]["FR"]
     for t, mn, md in zip(pts, fr_["mean"], fr_["median"]):
         dtt = datetime.fromisoformat(t)
         weeks[(dtt - timedelta(days=dtt.weekday())).date().isoformat()].append((mn, md))

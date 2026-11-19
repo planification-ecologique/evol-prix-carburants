@@ -3,14 +3,14 @@
 Page web qui montre l'évolution du prix du gazole, du SP95-E10 et du SP98 dans les stations-service de France métropolitaine. Elle s'appuie sur les [données ouvertes de prix-carburants.gouv.fr](https://www.prix-carburants.gouv.fr/rubrique/opendata/), sous Licence Ouverte 2.0.
 
 - Carburants : gazole, SP95-E10, SP98 (sélecteur ; lien direct avec `#e10` ou `#sp98`). Chacun est calculé séparément, avec les mêmes règles.
-- Périodes : 48 h, 7 jours, 3 mois, depuis février 2026, depuis janvier 2025.
+- Période : date de début et date de fin libres depuis le 1er janvier 2025 (par défaut les 7 derniers jours), avec des raccourcis 48 h, 7 jours, 3 mois, depuis février 2026, depuis janvier 2025. Points horaires sur les 3 derniers jours, journaliers sinon.
 - Échelles : France, région, département, station (cliquables sur la carte).
 - Indicateurs : prix moyen et prix médian, avec une courbe et un tableau de synthèse.
 - Carte colorée selon l'évolution sur la période : vert pour les plus fortes baisses, rouge pour les plus faibles baisses ou les hausses.
 
 ## Fonctionnement
 
-- `pipeline/build.py` télécharge les flux XML (archives annuelles, année en cours, jours récents, flux instantané). Il en extrait les prix de chaque carburant suivi (liste `FUELS`), puis calcule des fichiers JSON statiques : `_site/data/meta.json` (commun) et, dans `_site/data/<carburant>/`, les agrégats par période et par zone (`series.json`), l'évolution par station (`stations.json`) et l'historique brut par département (`stations/`).
+- `pipeline/build.py` télécharge les flux XML (archives annuelles, année en cours, jours récents, flux instantané). Il en extrait les prix de chaque carburant suivi (liste `FUELS`), puis calcule des fichiers JSON statiques : `_site/data/meta.json` (commun) et, dans `_site/data/<carburant>/`, les agrégats par zone sur deux grilles, chaque jour à minuit depuis 2025 et chaque heure sur 3 jours (`series.json`), la liste des stations avec leur dernier prix (`stations.json`), et le prix de chaque station à chaque point (`prix-jour.bin.gz`, `prix-heure.bin.gz`, entiers 16 bits compressés). La page découpe dans ces grilles la période choisie.
 - `site/` contient la page (HTML, CSS, JS sans étape de build, avec Leaflet et Chart.js chargés depuis un CDN).
 - `.github/workflows/update.yml` recalcule les données toutes les heures et publie le site sur GitHub Pages. Pour l'activer : Settings › Pages › Source : **GitHub Actions**.
 

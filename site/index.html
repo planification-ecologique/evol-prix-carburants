@@ -25,7 +25,11 @@
     </div>
     <div class="ctl">
       <span class="ctl-label">Période</span>
-      <div class="seg" id="ctl-period" role="radiogroup"></div>
+      <div class="dates">
+        <label>Du <input type="date" id="d-start"></label>
+        <label>au <input type="date" id="d-end"></label>
+      </div>
+      <div class="seg seg-sm" id="ctl-period" role="radiogroup" aria-label="Raccourcis de période"></div>
     </div>
     <div class="ctl">
       <span class="ctl-label">Échelle</span>
@@ -73,7 +77,7 @@
       <li><strong>Carburants :</strong> gazole, SP95-E10 (essence sans plomb 95 contenant jusqu'à 10 % d'éthanol, la plus vendue) et SP98. Chaque carburant est calculé séparément, avec les mêmes règles : une station n'entre dans les chiffres d'un carburant que si elle le vend. Le SP95 sans éthanol, le E85 et le GPL ne sont pas suivis.</li>
       <li><strong>Prix d'une station à un instant donné :</strong> c'est le dernier prix déclaré à cet instant. Il n'est plus compté s'il date de plus de <span data-k="stale_days">30</span> jours, la station étant alors considérée comme fermée ou inactive.</li>
       <li><strong>Ruptures et fermetures :</strong> une station n'est pas comptée pendant une rupture du carburant ou une fermeture déclarée, puisqu'elle ne vend pas ce carburant à ce moment-là. Une rupture ou une fermeture sans date de fin prend fin dès que la station publie un nouveau prix.</li>
-      <li><strong>Pas de temps :</strong> à l'heure sur 48 h, à la journée sur 7 jours, 3 mois et depuis février 2026, à la semaine depuis janvier 2025. Chaque point est l'état des prix en début de pas (à minuit pour un pas journalier). Le dernier point correspond au dernier prix reçu ; il ne compte que les stations qui affichent un prix pour ce carburant dans le flux instantané officiel, comme l'export de data.economie.gouv.fr.</li>
+      <li><strong>Période :</strong> on choisit une date de début et une date de fin (par défaut, les 7 derniers jours), entre le 1er janvier 2025 et aujourd'hui ; les boutons sous les dates sont des raccourcis. Le premier point est l'état des prix à minuit le jour de début, le dernier l'état à minuit le lendemain du jour de fin, ou le dernier prix reçu si la date de fin est aujourd'hui. Les points sont horaires si la période tient dans les 3 derniers jours, journaliers (à minuit) sinon. Le dernier prix reçu ne compte que les stations qui affichent un prix pour ce carburant dans le flux instantané officiel, comme l'export de data.economie.gouv.fr.</li>
       <li><strong>Prix moyen et médian :</strong> ils sont calculés sur l'ensemble des stations actives de la zone, sans pondération par les volumes vendus, que les données ne fournissent pas.</li>
       <li><strong>Prix aberrants et fautes de saisie :</strong> sont écartés les prix en dehors de <span data-k="price_range">1 à 3</span> €/L ; les prix qui s'écartent d'au moins 0,30 € du prix précédent et que la station corrige dans les 72 heures (par exemple 2,25 € → 1,25 € → 2,25 €, ou 2,36 € → 2,99 € → 2,30 €) ; et les prix inférieurs de plus de 0,50 € à la médiane nationale du jour pour ce carburant (typiquement 1,25 € saisi au lieu de 2,25 €). La station garde alors son prix valide précédent. Les prix élevés ne sont pas écartés : ils correspondent pour l'essentiel à des stations d'autoroute.</li>
       <li><strong>Évolution affichée sur la carte :</strong> c'est l'écart en €/L entre le premier et le dernier point de la période. La couleur est verte quand le prix baisse et rouge quand il monte. Elle est d'autant plus foncée que l'écart est grand, et presque blanche autour de zéro. La teinte la plus foncée correspond au 95ᵉ centile des écarts, en valeur absolue, des zones affichées. À l'échelle France, la carte montre les départements pour situer les écarts.</li>
