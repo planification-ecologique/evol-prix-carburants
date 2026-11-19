@@ -2,7 +2,9 @@ name: Mise à jour des données et publication
 
 on:
   schedule:
-    - cron: "7 * * * *" # toutes les heures
+    # GitHub ne garantit pas les déclenchements planifiés (en pratique 3 à 4 par jour
+    # avec un seul créneau horaire) : deux créneaux par heure augmentent la fréquence réelle.
+    - cron: "7,37 * * * *"
   workflow_dispatch:
   push:
     branches: [main, "claude/**"]
@@ -11,6 +13,7 @@ permissions:
   contents: read
   pages: write
   id-token: write
+  actions: write # pour la réactivation automatique (étape « Maintien en activité »)
 
 concurrency:
   group: pages-${{ github.ref }}
@@ -50,6 +53,13 @@ jobs:
       - uses: actions/upload-pages-artifact@v3
         with:
           path: _site
+      # GitHub désactive les workflows planifiés d'un dépôt public après 60 jours sans commit.
+      # Réactiver le workflow par l'API remet ce compteur à zéro, sans commit ni push.
+      - name: Maintien en activité (évite la désactivation après 60 jours)
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api -X PUT "repos/${{ github.repository }}/actions/workflows/update.yml/enable" && echo "Workflow réactivé"
 
   deploy:
     if: github.ref == 'refs/heads/main'
