@@ -64,6 +64,9 @@ for i in range(40):
         snap.append(f'<prix nom="Gazole" id="1" maj="{last[0]:%Y-%m-%d %H:%M:%S}" valeur="{last[1]:.3f}"/>')
     if i == 13:  # rupture de SP98 en cours
         snap.append('<rupture id="6" nom="SP98" debut="2026-11-01 18:00:00" fin="" type="temporaire"/>')
+    elif i == 14:  # rupture de SP95-E10 en cours, commencée après le dernier prix reçu (13 h), prix encore affiché
+        snap.append('<rupture id="5" nom="E10" debut="2026-11-02 13:30:00" fin="" type="temporaire"/>')
+        snap.append(f'<prix nom="E10" id="5" maj="{last[0]:%Y-%m-%d %H:%M:%S}" valeur="{last[1] + 0.05:.3f}"/>')
     else:
         snap.append(f'<prix nom="E10" id="5" maj="{last[0]:%Y-%m-%d %H:%M:%S}" valeur="{last[1] + 0.05:.3f}"/>')
         if i % 3:

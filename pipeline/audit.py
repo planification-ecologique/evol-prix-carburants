@@ -348,6 +348,8 @@ def build_intervals(R, clean, station_dep, now_m):
         else:
             nx = next_after(pid, d)
             e = nx if nx is not None else now_m
+        if cur:
+            d = min(d, now_m)  # en cours d'après le flux instantané : couvre le dernier point
         if e > d:
             out[pid].append((d, e, f"rupture {lst[0][1] or '?'}" + (" en cours" if cur else "")))
     frecs = defaultdict(list)

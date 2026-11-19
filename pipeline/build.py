@@ -345,6 +345,10 @@ def exclusion_intervals(col: Collector, fuel: str, sid, ts, stations, now_m: int
         if fin is None and not current:
             nxt = next_price(pid, s)
             fin = nxt if nxt is not None else now_m  # terminée avant maintenant, date exacte inconnue
+        if current:
+            # rupture en cours dans le flux instantané : elle couvre le dernier point, même si sa date de début
+            # est postérieure au dernier prix reçu (flux instantané un peu plus récent que les prix)
+            s = min(s, now_m)
         add(pid, s, fin, f"rupture {typ or '?'}{' en cours' if current else ''}")
     for (pid, typ, s), fin in col.ferm.items():
         if fin is None:
