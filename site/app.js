@@ -6,7 +6,7 @@
   // Raccourcis de période : [clé, libellé, nombre de jours avant aujourd'hui ou date de début] ; la date de fin est aujourd'hui
   const SHORTCUTS = [["48h", "48 h", 2], ["7j", "7 jours", 7], ["3m", "3 mois", 91]];
   const MIN_DATE = "2025-01-01"; // début de la grille journalière (data/<carburant>/series.json, période « jour »)
-  // Carburants : clé = dossier des données (voir FUELS dans pipeline/build.py)
+  // Carburants (la carte s'ouvre sur le gazole) : clé = dossier des données (voir FUELS dans pipeline/build.py)
   const FUEL_OPTS = [["gazole", "Gazole"], ["e10", "SP95-E10"], ["sp98", "SP98"]];
   const FUEL_LABEL = Object.fromEntries(FUEL_OPTS);
   const SCALE_OPTS = [["FR", "France"], ["R", "Région"], ["D", "Département"], ["S", "Station"]];
@@ -19,7 +19,7 @@
   const SHOW_MEAN = false;
 
   // start, end : dates de début et de fin (AAAA-MM-JJ), fixées au chargement (J-7 → aujourd'hui)
-  const state = { fuel: initialFuel(), start: null, end: null, scale: "FR", indic: SHOW_MEAN ? "mean" : "median", sel: { kind: "FR", code: "FR" } };
+  const state = { fuel: "gazole", start: null, end: null, scale: "FR", indic: SHOW_MEAN ? "mean" : "median", sel: { kind: "FR", code: "FR" } };
   let D = {}; // données communes chargées (meta, contours)
   let map, layer, chart, renderer;
   let R; // période affichée, calculée à chaque rendu (voir currentRange)
@@ -27,11 +27,6 @@
   const FD = Object.fromEntries(FUEL_OPTS.map(([k]) => [k, { matrix: {} }]));
   const F = () => FD[state.fuel];
 
-  // Carburant choisi conservé dans l'adresse (#e10) pour pouvoir partager le lien
-  function initialFuel() {
-    const h = location.hash.slice(1);
-    return FUEL_OPTS.some(([k]) => k === h) ? h : "gazole";
-  }
 
   // ------------------------------------------------------------------ utilitaires
   const $ = (id) => document.getElementById(id);
@@ -153,7 +148,6 @@
       b.addEventListener("click", () => {
         state[key] = value;
         if (key === "scale") state.sel = { kind: "FR", code: "FR" };
-        if (key === "fuel") history.replaceState(null, "", value === "gazole" ? location.pathname + location.search : "#" + value);
         render();
       });
       el.appendChild(b);
@@ -487,10 +481,8 @@
     segmented($("ctl-scale"), SCALE_OPTS, "scale");
     segmented($("ctl-indic"), Object.entries(INDICS), "indic");
     if (!SHOW_MEAN) $("ctl-indic").closest(".ctl").style.display = "none";
-    window.addEventListener("hashchange", () => {
-      const f = initialFuel();
-      if (f !== state.fuel) { state.fuel = f; render(); }
-    });
+    // La carte s'ouvre toujours sur le gazole (les anciens liens #e10, #sp98 sont ignorés)
+    if (location.hash) history.replaceState(null, "", location.pathname + location.search);
     $("sel-reset").addEventListener("click", () => { state.sel = { kind: "FR", code: "FR" }; render(); });
     initMap();
     try {

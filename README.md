@@ -2,7 +2,7 @@
 
 Page web qui montre l'évolution du prix du gazole, du SP95-E10 et du SP98 dans les stations-service de France métropolitaine. Elle s'appuie sur les [données ouvertes de prix-carburants.gouv.fr](https://www.prix-carburants.gouv.fr/rubrique/opendata/), sous Licence Ouverte 2.0.
 
-- Carburants : gazole, SP95-E10, SP98, côte à côte dans le graphique et les tableaux (une courbe et une colonne par carburant). La carte montre un carburant à la fois (petit sélecteur sur la carte, gazole par défaut ; lien direct avec `#e10` ou `#sp98`). Chacun est calculé séparément, avec les mêmes règles.
+- Carburants : gazole, SP95-E10, SP98, côte à côte dans le graphique et les tableaux (une courbe et une colonne par carburant). La carte montre un carburant à la fois (petit sélecteur sur la carte, gazole par défaut). Chacun est calculé séparément, avec les mêmes règles.
 - Période : date de début et date de fin libres depuis le 1er janvier 2025 (par défaut les 7 derniers jours), avec des raccourcis 48 h, 7 jours, 3 mois. Points horaires sur les 3 derniers jours, journaliers sinon.
 - Échelles : France, région, département, station (cliquables sur la carte).
 - Indicateurs : prix moyen et prix médian, avec une courbe et un tableau de synthèse.

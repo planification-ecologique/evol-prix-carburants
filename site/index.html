@@ -22,10 +22,11 @@
     <div class="ctl">
       <span class="ctl-label">Période</span>
       <div class="dates">
-        <label>Du <input type="date" id="d-start"></label>
-        <label>au <input type="date" id="d-end"></label>
+        <input type="date" id="d-start" aria-label="Date de début">
+        <span aria-hidden="true">→</span>
+        <input type="date" id="d-end" aria-label="Date de fin">
       </div>
-      <div class="seg seg-sm" id="ctl-period" role="radiogroup" aria-label="Raccourcis de période"></div>
+      <div class="shortcuts" id="ctl-period" role="radiogroup" aria-label="Raccourcis de période"></div>
     </div>
     <div class="ctl">
       <span class="ctl-label">Échelle</span>
