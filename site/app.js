@@ -4,7 +4,7 @@
 
   // tableaux de paires : l'ordre des clés numériques (« 2025 ») n'est pas garanti dans un objet
   // Raccourcis de période : [clé, libellé, nombre de jours avant aujourd'hui ou date de début] ; la date de fin est aujourd'hui
-  const SHORTCUTS = [["48h", "48 h", 2], ["7j", "7 jours", 7], ["3m", "3 mois", 91], ["fev26", "Depuis fév. 2026", "2026-02-01"], ["2025", "Depuis 2025", "2025-01-01"]];
+  const SHORTCUTS = [["48h", "48 h", 2], ["7j", "7 jours", 7], ["3m", "3 mois", 91]];
   const MIN_DATE = "2025-01-01"; // début de la grille journalière (data/<carburant>/series.json, période « jour »)
   // Carburants : clé = dossier des données (voir FUELS dans pipeline/build.py)
   const FUEL_OPTS = [["gazole", "Gazole"], ["e10", "SP95-E10"], ["sp98", "SP98"]];
@@ -262,8 +262,8 @@
   }
 
   // Courbe d'une station : ses prix aux points de la période (mêmes règles que les agrégats : 30 jours, ruptures)
-  async function stationSeries(i) {
-    const M = await loadMatrix(state.fuel, R.grid);
+  async function stationSeries(fuel, i) {
+    const M = await loadMatrix(fuel, R.grid);
     const out = [];
     for (let k = R.i0; k <= R.i1; k++) { const v = M.at(k, i); out.push(v ? v / 1000 : null); }
     return { mean: out, median: out, n: out.map((x) => (x == null ? 0 : 1)) };
@@ -279,40 +279,47 @@
     return out;
   }
 
-  // ------------------------------------------------------------------ panneau latéral
+  // ------------------------------------------------------------------ panneau latéral (les trois carburants côte à côte)
+  const FUELS = FUEL_OPTS.map(([k]) => k);
+  const fuelColor = (k) => css(`--f-${k}`);
+  const head = (first) => `<tr><th>${first}</th>${FUELS.map((k) => `<th><span class="swatch" style="background:${fuelColor(k)}"></span>${FUEL_LABEL[k]}</th>`).join("")}</tr>`;
+  const nf = (x) => (x == null ? "–" : x.toLocaleString("fr-FR"));
+
   async function drawSide() {
-    let s, title, sub;
-    const sel = state.sel;
-    if (sel.kind === "S") {
-      const i = sel.idx, st = F().stations;
-      s = await stationSeries(i);
-      title = st.ville[i] || `Station ${st.id[i]}`;
-      sub = `${FUEL_LABEL[state.fuel]} · ${st.adresse[i] || ""} · département ${st.dep[i]} · dernier prix ${fmtPrice(st.prix[i])}${st.maj[i] ? " le " + st.maj[i].replace("T", " à ").slice(0, 18) : ""}`;
+    const sel = state.sel, r = R, isStation = sel.kind === "S";
+    let S; // séries de chaque carburant sur la période : { gazole: {mean, median, n}, … }
+    let sub;
+    if (isStation) {
+      const i = sel.idx;
+      const [sts, ser] = await Promise.all([
+        Promise.all(FUELS.map(loadStations)),
+        Promise.all(FUELS.map((k) => stationSeries(k, i))),
+      ]);
+      if (state.sel !== sel || R !== r) return;
+      S = Object.fromEntries(FUELS.map((k, j) => [k, ser[j]]));
+      const st = sts[0];
+      $("sel-title").textContent = st.ville[i] || `Station ${st.id[i]}`;
+      const last = FUELS.map((k, j) => `${FUEL_LABEL[k]} ${sts[j].prix[i] == null ? "non vendu" : fmtPrice(sts[j].prix[i])}`).join(", ");
+      sub = `${st.adresse[i] || ""} · département ${st.dep[i]} · derniers prix : ${last}`;
     } else {
-      s = cut(F().series[R.grid][sel.kind === "FR" ? "FR" : sel.kind + sel.code]);
-      title = sel.kind === "FR" ? "France métropolitaine" : sel.name;
-      const nLast = s ? s.n[s.n.length - 1] : 0;
-      sub = `${FUEL_LABEL[state.fuel]} · ${{ FR: "Pays", R: "Région", D: "Département" }[sel.kind]} · ${nLast.toLocaleString("fr-FR")} stations actives en fin de période`;
+      const zone = sel.kind === "FR" ? "FR" : sel.kind + sel.code;
+      S = Object.fromEntries(FUELS.map((k) => [k, cut(FD[k].series[r.grid][zone])]));
+      $("sel-title").textContent = sel.kind === "FR" ? "France métropolitaine" : sel.name;
+      sub = { FR: "Pays", R: "Région", D: "Département" }[sel.kind];
     }
-    $("sel-title").textContent = title;
     $("sel-sub").textContent = sub;
     $("sel-reset").hidden = sel.kind === "FR";
 
+    const key = isStation ? "median" : state.indic; // pour une station, les trois clés portent son prix
     const labels = R.points.map((x) => fmtPoint(x, R.step));
-    const isStation = sel.kind === "S";
-    const ds = (key, color) => ({
-      label: `${isStation ? "Prix de la station" : INDICS[key]} (${FUEL_LABEL[state.fuel]})`,
-      data: s ? s[key] : [],
-      borderColor: color, backgroundColor: color,
+    const datasets = FUELS.map((k) => ({
+      label: FUEL_LABEL[k],
+      data: S[k] ? S[k][key] : [],
+      borderColor: fuelColor(k), backgroundColor: fuelColor(k),
       borderWidth: 2, pointRadius: 0, pointHoverRadius: 4, tension: 0, spanGaps: true,
-      borderDash: !isStation && key !== state.indic ? [5, 4] : [],
-    });
-    const datasets = isStation
-      ? [ds("mean", css("--mean"))]
-      : SHOW_MEAN
-        ? [ds("mean", css("--mean")), ds("median", css("--median"))]
-        : [ds("median", css("--median"))];
+    }));
     const ink2 = css("--ink-2"), line = css("--line");
+    const title = isStation ? "Prix de la station" : INDICS[key];
     if (!chart) {
       chart = new Chart($("chart"), {
         type: "line",
@@ -335,50 +342,62 @@
       chart.data.datasets = datasets;
       chart.update();
     }
+    $("chart-title").textContent = title;
 
-    // Tableau de synthèse
-    const rows = (isStation ? ["mean"] : SHOW_MEAN ? ["mean", "median"] : ["median"]).map((k) => {
-      const a = s ? s[k] : [];
+    // Tableau de synthèse : une ligne par mesure, une colonne par carburant
+    const stat = FUELS.map((k) => {
+      const a = S[k] ? S[k][key] : [];
       const vals = a.filter((x) => x != null);
       const first = a.find((x) => x != null), last = [...a].reverse().find((x) => x != null);
-      const delta = first != null && last != null ? Math.round((last - first) * 1000) / 10 : null;
-      const cls = delta == null ? "" : delta < 0 ? "down" : delta > 0 ? "up" : "";
-      const color = k === "mean" ? css("--mean") : css("--median");
-      return `<tr><td><span class="swatch" style="background:${color}"></span>${isStation ? "Prix" : INDICS[k]}</td>` +
-        `<td>${fmtPrice(first)}</td><td>${fmtPrice(last)}</td><td class="${cls}">${fmtDelta(delta)}</td>` +
-        `<td>${fmtPrice(vals.length ? Math.min(...vals) : null)}</td><td>${fmtPrice(vals.length ? Math.max(...vals) : null)}</td></tr>`;
+      return {
+        first, last,
+        delta: first != null && last != null ? Math.round((last - first) * 1000) / 10 : null,
+        min: vals.length ? Math.min(...vals) : null, max: vals.length ? Math.max(...vals) : null,
+      };
     });
-    $("synth").querySelector("tbody").innerHTML = rows.join("");
+    const cls = (d) => (d == null ? "" : d < 0 ? "down" : d > 0 ? "up" : "");
+    $("synth").querySelector("thead").innerHTML = head(title);
+    $("synth").querySelector("tbody").innerHTML = [
+      ["Début", (x) => fmtPrice(x.first)], ["Fin", (x) => fmtPrice(x.last)],
+      ["Écart", (x) => fmtDelta(x.delta), (x) => cls(x.delta)],
+      ["Min", (x) => fmtPrice(x.min)], ["Max", (x) => fmtPrice(x.max)],
+    ].map(([lab, f, c]) => `<tr><td>${lab}</td>${stat.map((x) => `<td class="${c ? c(x) : ""}">${f(x)}</td>`).join("")}</tr>`).join("");
     const ptTxt = (x) => fmtDay(x.slice(0, 10)) + " à " + x.slice(11, 13) + " h" + (x.slice(14) === "00" ? "" : " " + x.slice(14));
     $("synth-note").textContent = `Du ${ptTxt(R.points[0])} au ${ptTxt(R.points[R.points.length - 1])}, un point par ${R.grid}.`;
-    await drawCounts(isStation ? null : s);
+    await drawCounts(isStation ? null : S);
   }
 
-  // Nombre de stations de la zone et nombre de stations dont le prix a baissé d'au moins 0,05 / 0,10 / 0,15 / 0,20 €
-  const DROPS = [5, 10, 15, 20]; // en centimes, unité des écarts dans stations.json
-  async function drawCounts(s) {
+  // Nombre de stations de la zone et nombre de stations dont le prix a baissé d'au moins 0,05 / 0,10 / 0,15 / 0,20 €,
+  // pour chaque carburant
+  const DROPS = [5, 10, 15, 20]; // en centimes
+  async function drawCounts(S) {
     const show = (on) => { $("counts").hidden = !on; $("counts-note").hidden = !on; };
-    if (!s) return show(false);
-    const sel = state.sel, r = R, fuel = state.fuel;
-    const [st, M] = await Promise.all([loadStations(fuel), loadMatrix(fuel, r.grid)]);
-    if (state.sel !== sel || R !== r || state.fuel !== fuel) return; // la sélection a changé entre-temps
-    const inZone = (i) =>
-      sel.kind === "FR" || (sel.kind === "D" ? st.dep[i] === sel.code : D.meta.dep_to_reg[st.dep[i]] === sel.code);
-    const deltas = stationDeltas(M);
-    let comparable = 0;
-    const counts = DROPS.map(() => 0);
-    for (let i = 0; i < st.id.length; i++) {
-      if (!inZone(i) || deltas[i] == null) continue;
-      comparable++;
-      DROPS.forEach((d, k) => { if (deltas[i] <= -d) counts[k]++; });
-    }
-    const active = s.n[s.n.length - 1];
-    const pct = (k) => (comparable ? ((100 * k) / comparable).toFixed(1).replace(".", ",") + " %" : "–");
-    const nf = (x) => x.toLocaleString("fr-FR");
+    if (!S) return show(false);
+    const sel = state.sel, r = R;
+    const data = await Promise.all(FUELS.map((k) => Promise.all([loadStations(k), loadMatrix(k, r.grid)])));
+    if (state.sel !== sel || R !== r) return; // la sélection a changé entre-temps
+    const cols = FUELS.map((k, j) => {
+      const [st, M] = data[j];
+      const inZone = (i) =>
+        sel.kind === "FR" || (sel.kind === "D" ? st.dep[i] === sel.code : D.meta.dep_to_reg[st.dep[i]] === sel.code);
+      const deltas = stationDeltas(M);
+      let comparable = 0;
+      const counts = DROPS.map(() => 0);
+      for (let i = 0; i < st.id.length; i++) {
+        if (!inZone(i) || deltas[i] == null) continue;
+        comparable++;
+        DROPS.forEach((d, q) => { if (deltas[i] <= -d) counts[q]++; });
+      }
+      const n = S[k] ? S[k].n : [];
+      return { active: n.length ? n[n.length - 1] : null, comparable, counts };
+    });
+    const pct = (x, c) => (c.comparable ? ((100 * x) / c.comparable).toFixed(1).replace(".", ",") + " %" : "–");
+    $("counts").querySelector("thead").innerHTML = head("Stations");
     $("counts").querySelector("tbody").innerHTML =
-      `<tr><td>Actives en fin de période</td><td>${nf(active)}</td><td></td></tr>` +
-      `<tr><td>Avec un prix au début et à la fin</td><td>${nf(comparable)}</td><td>100 %</td></tr>` +
-      DROPS.map((d, k) => `<tr><td>Baisse d'au moins ${fmtPrice(d / 100)}</td><td>${nf(counts[k])}</td><td>${pct(counts[k])}</td></tr>`).join("");
+      `<tr><td>Actives en fin de période</td>${cols.map((c) => `<td>${nf(c.active)}</td>`).join("")}</tr>` +
+      `<tr><td>Avec un prix au début et à la fin</td>${cols.map((c) => `<td>${nf(c.comparable)}</td>`).join("")}</tr>` +
+      DROPS.map((d, q) => `<tr><td>Baisse d'au moins ${fmtPrice(d / 100)}</td>${cols.map((c) =>
+        `<td>${nf(c.counts[q])} <span class="pct">(${pct(c.counts[q], c)})</span></td>`).join("")}</tr>`).join("");
     $("counts-note").textContent =
       "Les pourcentages portent sur les stations qui ont un prix au début et à la fin de la période.";
     show(true);
@@ -392,12 +411,13 @@
     const fuel = state.fuel;
     R = currentRange();
     const grid = R.grid;
-    // séries du carburant (chargées au premier choix) ; stations et prix par station seulement à l'échelle Station
+    // séries des trois carburants (graphique et tableaux) ; stations et prix par station du carburant de la carte
+    // seulement à l'échelle Station
     const needS = state.scale === "S";
-    if (!FD[fuel].series || (needS && (!FD[fuel].stations || !FD[fuel].matrix[grid]))) {
+    if (FUEL_OPTS.some(([k]) => !FD[k].series) || (needS && (!FD[fuel].stations || !FD[fuel].matrix[grid]))) {
       $("map-loading").hidden = false;
       try {
-        await loadSeries(fuel);
+        await Promise.all(FUEL_OPTS.map(([k]) => loadSeries(k)));
         if (needS) await Promise.all([loadStations(fuel), loadMatrix(fuel, grid)]);
       } catch (e) {
         $("maj").textContent = "Impossible de charger les données (" + e.message + ").";
@@ -412,7 +432,10 @@
     await drawSide();
   }
 
-  const get = (f) => fetch(`data/${f}`).then((r) => { if (!r.ok) throw new Error(f); return r.json(); });
+  // Le navigateur garde les fichiers en cache (10 min sur GitHub Pages) : meta.json est toujours revalidé, et les
+  // autres fichiers sont demandés avec la date de calcul (?v=…), pour ne jamais mélanger deux calculs.
+  let DV = "";
+  const get = (f, opts) => fetch(`data/${f}${DV}`, opts).then((r) => { if (!r.ok) throw new Error(f); return r.json(); });
   const promises = {};
   const loadSeries = (fuel) =>
     (promises[fuel + "/series"] ||= get(`${fuel}/series.json`).then((x) => (FD[fuel].series = x)));
@@ -420,7 +443,7 @@
     (promises[fuel + "/stations"] ||= get(`${fuel}/stations.json`).then((x) => (FD[fuel].stations = x)));
   // Prix de chaque station à chaque point de la grille (voir write_matrix dans pipeline/build.py)
   const loadMatrix = (fuel, grid) =>
-    (promises[`${fuel}/prix-${grid}`] ||= fetch(`data/${fuel}/prix-${grid}.bin.gz`).then(async (r) => {
+    (promises[`${fuel}/prix-${grid}`] ||= fetch(`data/${fuel}/prix-${grid}.bin.gz${DV}`).then(async (r) => {
       if (!r.ok) throw new Error(`prix-${grid}`);
       let buf = new Uint8Array(await r.arrayBuffer());
       // fichier gzip, sauf si le serveur l'a déjà décompressé à la volée
@@ -439,14 +462,20 @@
 
   // stations actives = prix déclaré dans les 30 derniers jours (dernier point de la série France)
   function showMaj() {
-    const nFR = F().series.heure.FR.n, nActive = nFR[nFR.length - 1];
-    $("maj").textContent = `Données jusqu'au ${D.meta.data_until.replace("T", " à ")} · ${nActive.toLocaleString("fr-FR")} stations actives en ${FUEL_LABEL[state.fuel]} · mise à jour toutes les heures`;
+    const act = FUEL_OPTS.map(([k, lab]) => { const n = FD[k].series.heure.FR.n; return `${n[n.length - 1].toLocaleString("fr-FR")} en ${lab}`; });
+    $("maj").textContent = `Données jusqu'au ${D.meta.data_until.replace("T", " à ")} · stations actives : ${act.join(", ")} · mise à jour toutes les heures`;
   }
 
   async function load() {
     // Uniquement ce qu'il faut pour le premier affichage (France, régions, départements)
-    const [meta, , regions, deps] = await Promise.all([
-      get("meta.json"), loadSeries(state.fuel), get("regions.geojson"), get("departements.geojson"),
+    const meta = await get("meta.json", { cache: "no-cache" });
+    if (!meta.periods || !meta.periods.heure || !meta.fuels) {
+      // page publiée avant les données correspondantes (publication en cours)
+      throw new Error("mise à jour du site en cours, rechargez la page dans quelques minutes");
+    }
+    DV = "?v=" + encodeURIComponent(meta.generated_at);
+    const [, regions, deps] = await Promise.all([
+      loadSeries(state.fuel), get("regions.geojson"), get("departements.geojson"),
     ]);
     D = { meta, regions, deps };
     document.querySelectorAll("[data-k=stale_days]").forEach((e) => (e.textContent = meta.stale_days));
@@ -472,7 +501,6 @@
       // préchargement en arrière-plan, une fois la page affichée : stations du carburant affiché, séries des autres
       setTimeout(() => {
         loadStations(state.fuel).catch(() => {});
-        for (const [k] of FUEL_OPTS) loadSeries(k).catch(() => {});
       }, 500);
     } catch (e) {
       $("maj").textContent = "Impossible de charger les données (" + e.message + ").";

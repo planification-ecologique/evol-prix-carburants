@@ -20,10 +20,6 @@
 
   <section class="controls" aria-label="Filtres">
     <div class="ctl">
-      <span class="ctl-label">Carburant</span>
-      <div class="seg" id="ctl-fuel" role="radiogroup"></div>
-    </div>
-    <div class="ctl">
       <span class="ctl-label">Période</span>
       <div class="dates">
         <label>Du <input type="date" id="d-start"></label>
@@ -43,6 +39,10 @@
 
   <main>
     <section class="card map-card">
+      <div class="map-fuel">
+        <span class="ctl-label">Carte</span>
+        <div class="seg seg-sm" id="ctl-fuel" role="radiogroup" aria-label="Carburant affiché sur la carte"></div>
+      </div>
       <div id="map" aria-label="Carte de l'évolution du prix"></div>
       <div class="map-loading" id="map-loading">Chargement des données…</div>
       <div class="legend" id="legend"></div>
@@ -54,16 +54,17 @@
         <button id="sel-reset" class="link" hidden>Revenir à la France</button>
       </div>
       <p class="sel-sub" id="sel-sub"></p>
-      <div class="chart-wrap"><canvas id="chart" aria-label="Courbe des prix moyen et médian"></canvas></div>
+      <p class="chart-title" id="chart-title"></p>
+      <div class="chart-wrap"><canvas id="chart" aria-label="Courbes des prix du gazole, du SP95-E10 et du SP98"></canvas></div>
       <table class="synth" id="synth">
         <caption class="visually-hidden">Synthèse de la période</caption>
-        <thead><tr><th></th><th>Début</th><th>Fin</th><th>Écart</th><th>Min</th><th>Max</th></tr></thead>
+        <thead></thead>
         <tbody></tbody>
       </table>
       <p class="note" id="synth-note"></p>
       <table class="synth" id="counts" hidden>
         <caption class="visually-hidden">Nombre de stations et baisses de prix sur la période</caption>
-        <thead><tr><th>Stations</th><th>Nombre</th><th>Part</th></tr></thead>
+        <thead></thead>
         <tbody></tbody>
       </table>
       <p class="note" id="counts-note" hidden></p>
@@ -74,7 +75,7 @@
     <h2>Hypothèses et méthode</h2>
     <ul id="hyp-list">
       <li><strong>Source :</strong> flux annuels, quotidiens et instantané de <a href="https://www.prix-carburants.gouv.fr/rubrique/opendata/">prix-carburants.gouv.fr</a> (Licence Ouverte 2.0). Les données sont recalculées toutes les heures. Les prix sont publiés par les stations elles-mêmes.</li>
-      <li><strong>Carburants :</strong> gazole, SP95-E10 (essence sans plomb 95 contenant jusqu'à 10 % d'éthanol, la plus vendue) et SP98. Chaque carburant est calculé séparément, avec les mêmes règles : une station n'entre dans les chiffres d'un carburant que si elle le vend. Le SP95 sans éthanol, le E85 et le GPL ne sont pas suivis.</li>
+      <li><strong>Carburants :</strong> gazole, SP95-E10 (essence sans plomb 95 contenant jusqu'à 10 % d'éthanol, la plus vendue) et SP98. Le graphique et les tableaux les montrent côte à côte ; la carte en montre un à la fois, au choix (gazole par défaut). Chaque carburant est calculé séparément, avec les mêmes règles : une station n'entre dans les chiffres d'un carburant que si elle le vend. Le SP95 sans éthanol, le E85 et le GPL ne sont pas suivis.</li>
       <li><strong>Prix d'une station à un instant donné :</strong> c'est le dernier prix déclaré à cet instant. Il n'est plus compté s'il date de plus de <span data-k="stale_days">30</span> jours, la station étant alors considérée comme fermée ou inactive.</li>
       <li><strong>Ruptures et fermetures :</strong> une station n'est pas comptée pendant une rupture du carburant ou une fermeture déclarée, puisqu'elle ne vend pas ce carburant à ce moment-là. Une rupture ou une fermeture sans date de fin prend fin dès que la station publie un nouveau prix.</li>
       <li><strong>Période :</strong> on choisit une date de début et une date de fin (par défaut, les 7 derniers jours), entre le 1er janvier 2025 et aujourd'hui ; les boutons sous les dates sont des raccourcis. Le premier point est l'état des prix à minuit le jour de début, le dernier l'état à minuit le lendemain du jour de fin, ou le dernier prix reçu si la date de fin est aujourd'hui. Les points sont horaires si la période tient dans les 3 derniers jours, journaliers (à minuit) sinon. Le dernier prix reçu ne compte que les stations qui affichent un prix pour ce carburant dans le flux instantané officiel, comme l'export de data.economie.gouv.fr.</li>
