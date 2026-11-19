@@ -412,7 +412,10 @@
     await drawSide();
   }
 
-  const get = (f) => fetch(`data/${f}`).then((r) => { if (!r.ok) throw new Error(f); return r.json(); });
+  // Le navigateur garde les fichiers en cache (10 min sur GitHub Pages) : meta.json est toujours revalidé, et les
+  // autres fichiers sont demandés avec la date de calcul (?v=…), pour ne jamais mélanger deux calculs.
+  let DV = "";
+  const get = (f, opts) => fetch(`data/${f}${DV}`, opts).then((r) => { if (!r.ok) throw new Error(f); return r.json(); });
   const promises = {};
   const loadSeries = (fuel) =>
     (promises[fuel + "/series"] ||= get(`${fuel}/series.json`).then((x) => (FD[fuel].series = x)));
@@ -420,7 +423,7 @@
     (promises[fuel + "/stations"] ||= get(`${fuel}/stations.json`).then((x) => (FD[fuel].stations = x)));
   // Prix de chaque station à chaque point de la grille (voir write_matrix dans pipeline/build.py)
   const loadMatrix = (fuel, grid) =>
-    (promises[`${fuel}/prix-${grid}`] ||= fetch(`data/${fuel}/prix-${grid}.bin.gz`).then(async (r) => {
+    (promises[`${fuel}/prix-${grid}`] ||= fetch(`data/${fuel}/prix-${grid}.bin.gz${DV}`).then(async (r) => {
       if (!r.ok) throw new Error(`prix-${grid}`);
       let buf = new Uint8Array(await r.arrayBuffer());
       // fichier gzip, sauf si le serveur l'a déjà décompressé à la volée
@@ -445,8 +448,14 @@
 
   async function load() {
     // Uniquement ce qu'il faut pour le premier affichage (France, régions, départements)
-    const [meta, , regions, deps] = await Promise.all([
-      get("meta.json"), loadSeries(state.fuel), get("regions.geojson"), get("departements.geojson"),
+    const meta = await get("meta.json", { cache: "no-cache" });
+    if (!meta.periods || !meta.periods.heure || !meta.fuels) {
+      // page publiée avant les données correspondantes (publication en cours)
+      throw new Error("mise à jour du site en cours, rechargez la page dans quelques minutes");
+    }
+    DV = "?v=" + encodeURIComponent(meta.generated_at);
+    const [, regions, deps] = await Promise.all([
+      loadSeries(state.fuel), get("regions.geojson"), get("departements.geojson"),
     ]);
     D = { meta, regions, deps };
     document.querySelectorAll("[data-k=stale_days]").forEach((e) => (e.textContent = meta.stale_days));
