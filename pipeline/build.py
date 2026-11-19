@@ -1,4 +1,4 @@
-"""Construit les données statiques de la page « Évolution du prix du gazole ».
+"""Construit les données statiques de la page « Évolution du prix des carburants » (gazole, SP95-E10, SP98).
 
 Sources (open data prix-carburants.gouv.fr, Licence Ouverte 2.0) :
   - archives annuelles  https://donnees.roulez-eco.fr/opendata/annee/AAAA
@@ -9,6 +9,9 @@ Sources (open data prix-carburants.gouv.fr, Licence Ouverte 2.0) :
 Toutes les dates du flux sont en heure de Paris : on travaille en heure locale
 « naïve », convertie en minutes depuis 1970.
 
+Sorties : data/meta.json (commun), puis pour chaque carburant data/<carburant>/series.json,
+stations.json et stations/<département>.json.
+
 Usage : python pipeline/build.py --out _site/data [--cache .cache] [--now 2026-11-02T14:00]
         python pipeline/build.py --local-xml fichier1.xml ... (tests, sans réseau)
 """
@@ -16,6 +19,7 @@ Usage : python pipeline/build.py --out _site/data [--cache .cache] [--now 2026-1
 from __future__ import annotations
 
 import argparse
+import array
 import io
 import json
 import math
@@ -48,6 +52,24 @@ SPIKE_JUMP, SPIKE_HOURS = 300, 72
 # Prix inférieur de plus de 0,50 € à la médiane nationale du jour : faute de saisie (ex. 1,25 € au lieu de 2,25 €)
 LOW_OUTLIER = 0.50
 FAR_FUTURE = 1 << 40
+
+# Carburants suivis : clé (dossier de sortie) -> (nom dans les flux, identifiant dans les flux, libellé).
+# Les mêmes règles s'appliquent à chacun (plage 1–3 €/L, 30 jours, fautes de saisie, ruptures).
+# Pour en ajouter un : une ligne ici et une entrée dans FUEL_OPTS (site/app.js).
+FUELS = {
+    "gazole": ("Gazole", "1", "Gazole"),
+    "e10": ("E10", "5", "SP95-E10"),
+    "sp98": ("SP98", "6", "SP98"),
+}
+FUEL_BY_NAME = {v[0]: k for k, v in FUELS.items()}
+FUEL_BY_ID = {v[1]: k for k, v in FUELS.items()}
+
+
+def fuel_of(el) -> str | None:
+    """Carburant suivi d'une balise <prix> ou <rupture> : par son nom, ou par son identifiant si elle n'a pas de nom
+    (une balise nommée d'un autre carburant, par exemple SP95, n'est jamais rattachée par son identifiant)."""
+    nom = el.get("nom")
+    return FUEL_BY_NAME.get(nom) if nom else FUEL_BY_ID.get(el.get("id"))
 
 
 def minutes(dt: datetime) -> int:
@@ -136,25 +158,32 @@ def parse_coord(s: str) -> float | None:
     return v
 
 
+class FuelEvents:
+    """Prix et ruptures d'un carburant."""
+
+    def __init__(self) -> None:
+        self.sid = array.array("q")
+        self.ts = array.array("q")
+        self.price = array.array("q")
+        # ruptures : (station, début) -> [fin | None, type, en cours selon le flux instantané]
+        self.rupt: dict[tuple[int, int], list] = {}
+        # stations qui affichent un prix de ce carburant dans le flux instantané (état officiel actuel)
+        self.priced_now: set[int] = set()
+
+
 class Collector:
     def __init__(self) -> None:
-        self.sid: list[int] = []
-        self.ts: list[int] = []
-        self.price: list[int] = []
         self.meta: dict[int, dict] = {}
-        # ruptures de gazole : (station, début) -> [fin | None, type, en cours selon le flux instantané]
-        self.rupt: dict[tuple[int, int], list] = {}
-        # fermetures : (station, type, début) -> fin | None
+        self.fuels = {k: FuelEvents() for k in FUELS}
+        # fermetures (communes à tous les carburants) : (station, type, début) -> fin | None
         self.ferm: dict[tuple[int, str, int], int | None] = {}
-        # stations qui affichent un prix gazole dans le flux instantané (état officiel actuel)
-        self.priced_now: set[int] = set()
         self.snapshot_read = False
 
     def read(self, stream, since: datetime, label: str, current: bool = False, snapshot: bool = False) -> None:
         """current=True pour le flux instantané avec ruptures : ses ruptures sont en cours maintenant.
-        snapshot=True pour les flux instantanés : on note les stations qui affichent un prix gazole."""
+        snapshot=True pour les flux instantanés : on note les stations qui affichent un prix de chaque carburant."""
         self.snapshot_read |= snapshot
-        n_before = len(self.ts)
+        n_before = {k: len(f.ts) for k, f in self.fuels.items()}
         since_m = minutes(since)
         for _, el in ET.iterparse(stream, events=("end",)):
             if el.tag != "pdv":
@@ -176,31 +205,35 @@ class Collector:
                 if t:
                     m[tag] = t.strip()
             for p in el.iter("prix"):
-                if p.get("nom") != "Gazole" and p.get("id") != "1":
+                k = fuel_of(p)
+                if k is None:
                     continue
                 dt, v = parse_maj(p.get("maj")), parse_price(p.get("valeur"))
                 if dt is None or v is None:
                     continue
+                f = self.fuels[k]
                 if snapshot:
-                    self.priced_now.add(pid)
+                    f.priced_now.add(pid)
                 t = minutes(dt)
                 if t < since_m:
                     continue
-                self.sid.append(pid)
-                self.ts.append(t)
-                self.price.append(v)
+                f.sid.append(pid)
+                f.ts.append(t)
+                f.price.append(v)
             for r in el.iter("rupture"):
-                if r.get("nom") != "Gazole" and r.get("id") != "1":
+                k = fuel_of(r)
+                if k is None:
                     continue
+                rupt = self.fuels[k].rupt
                 d = parse_maj(r.get("debut") or "")
                 if d is None:
                     continue
                 f = parse_maj(r.get("fin") or "")
                 fin = minutes(f) if f else None
                 key = (pid, minutes(d))
-                prev = self.rupt.get(key)
+                prev = rupt.get(key)
                 if prev is None:
-                    self.rupt[key] = [None if current else fin, r.get("type") or "", current]
+                    rupt[key] = [None if current else fin, r.get("type") or "", current]
                 elif current:
                     prev[0], prev[2] = None, True
                 elif fin is not None:
@@ -215,12 +248,14 @@ class Collector:
                 if key not in self.ferm or fin is not None:
                     self.ferm[key] = fin
             el.clear()
-        print(f"  {label}: {len(self.ts) - n_before} prix gazole", flush=True)
+        counts = ", ".join(f"{len(f.ts) - n_before[k]} {FUELS[k][2]}" for k, f in self.fuels.items())
+        print(f"  {label}: prix {counts}", flush=True)
 
-    def arrays(self):
-        sid = np.asarray(self.sid, dtype=np.int64)
-        ts = np.asarray(self.ts, dtype=np.int64)
-        pr = np.asarray(self.price, dtype=np.int64)
+    def arrays(self, fuel: str):
+        f = self.fuels[fuel]
+        sid = np.frombuffer(f.sid, dtype=np.int64).copy()
+        ts = np.frombuffer(f.ts, dtype=np.int64).copy()
+        pr = np.frombuffer(f.price, dtype=np.int64).copy()
         ok = (pr >= PRICE_MIN) & (pr <= PRICE_MAX)
         sid, ts, pr = sid[ok], ts[ok], pr[ok]
         order = np.lexsort((ts, sid))
@@ -278,12 +313,12 @@ def drop_low_outliers(sid, ts, pr, stations, now: datetime):
     return ~(np.isfinite(ref) & (pr / 1000.0 < ref - LOW_OUTLIER))
 
 
-def exclusion_intervals(col: Collector, sid, ts, stations, now_m: int):
-    """Intervalles [début, fin) pendant lesquels une station ne vend pas de gazole (rupture ou fermeture).
+def exclusion_intervals(col: Collector, fuel: str, sid, ts, stations, now_m: int):
+    """Intervalles [début, fin) pendant lesquels une station ne vend pas ce carburant (rupture ou fermeture).
 
     Une rupture ou une fermeture sans date de fin prend fin au premier prix publié ensuite
-    (une station qui publie un prix vend à nouveau du gazole), sauf rupture encore en cours
-    d'après le flux instantané. Au dernier point, une station qui n'affiche pas de prix gazole
+    (une station qui publie un prix vend à nouveau ce carburant), sauf rupture encore en cours
+    d'après le flux instantané. Au dernier point, une station qui n'affiche pas de prix de ce carburant
     dans le flux instantané n'est pas comptée, comme sur l'export officiel.
     """
     big = np.int64(1) << 32
@@ -305,7 +340,8 @@ def exclusion_intervals(col: Collector, sid, ts, stations, now_m: int):
         ends.append(FAR_FUTURE if e is None else e)
         stats[kind] += 1
 
-    for (pid, s), (fin, typ, current) in col.rupt.items():
+    fe = col.fuels[fuel]
+    for (pid, s), (fin, typ, current) in fe.rupt.items():
         if fin is None and not current:
             nxt = next_price(pid, s)
             fin = nxt if nxt is not None else now_m  # terminée avant maintenant, date exacte inconnue
@@ -321,7 +357,7 @@ def exclusion_intervals(col: Collector, sid, ts, stations, now_m: int):
             j = int(last[i])
             if j < 0 or int(sid[j]) != pid or now_m - int(ts[j]) > STALE_DAYS * 24 * 60:
                 continue  # pas de prix récent : déjà hors du calcul
-            if pid not in col.priced_now and pid not in covered:
+            if pid not in fe.priced_now and pid not in covered:
                 add(pid, now_m, None, "absente du flux instantané")
     return (np.asarray(rows, dtype=np.int64), np.asarray(starts, dtype=np.int64), np.asarray(ends, dtype=np.int64)), stats
 
@@ -397,6 +433,95 @@ def aggregate(mat):
 # --------------------------------------------------------------------------- principal
 
 
+def build_fuel(col, fuel, sid, ts, pr, stations, deps, now, pers, out: Path, dump_path, sources) -> dict:
+    """Nettoie les prix d'un carburant et écrit ses fichiers dans out/. Renvoie ses métadonnées."""
+    name = FUELS[fuel][2]
+    (out / "stations").mkdir(parents=True, exist_ok=True)
+    regs = np.asarray([DEP_TO_REG[d] for d in deps])
+
+    # Ne garder que les événements des stations retenues
+    keep = np.isin(sid, stations)
+    sid, ts, pr = sid[keep], ts[keep], pr[keep]
+
+    # Fautes de saisie : prix corrigés ensuite, puis prix trop bas, puis à nouveau prix corrigés
+    # (une faute peut en cacher une autre : 2,159 € → 1,555 € → 2,555 € → 2,155 €)
+    keep = drop_spikes(sid, ts, pr)
+    n_spikes = int(np.sum(~keep))
+    sid, ts, pr = sid[keep], ts[keep], pr[keep]
+    keep = drop_low_outliers(sid, ts, pr, stations, now)
+    n_low = int(np.sum(~keep))
+    sid, ts, pr = sid[keep], ts[keep], pr[keep]
+    keep = drop_spikes(sid, ts, pr)
+    n_spikes += int(np.sum(~keep))
+    sid, ts, pr = sid[keep], ts[keep], pr[keep]
+    print(f"Fautes de saisie écartées : {n_spikes} prix corrigés ensuite, {n_low} prix anormalement bas", flush=True)
+
+    # Ruptures et fermetures
+    excl, excl_stats = exclusion_intervals(col, fuel, sid, ts, stations, minutes(now))
+    print(f"Intervalles d'exclusion : {dict(excl_stats)}", flush=True)
+    if dump_path:
+        np.savez_compressed(
+            dump_path, sid=sid, ts=ts, pr=pr, stations=stations, deps=deps,
+            excl_rows=excl[0], excl_starts=excl[1], excl_ends=excl[2],
+            now=minutes(now),
+            stats=json.dumps({"fuel": fuel, "spikes": n_spikes, "low": n_low, "excl": dict(excl_stats), "sources": sources}),
+        )
+
+    series: dict = {}
+    deltas: dict = {}
+    for key, p in pers.items():
+        pts_m = np.asarray([minutes(t) for t in p["points"]], dtype=np.int64)
+        mat = price_matrix(sid, ts, pr, stations, pts_m, excl)
+        s = {"FR": aggregate(mat)}
+        for r in REGIONS:
+            s[f"R{r}"] = aggregate(mat[regs == r])
+        for d in sorted(set(deps)):
+            s[f"D{d}"] = aggregate(mat[deps == d])
+        series[key] = s
+        delta = (mat[:, -1] - mat[:, 0]) * 100  # c€/L
+        deltas[key] = [None if np.isnan(x) else round(float(x), 1) for x in delta]
+        fr = s["FR"]
+        print(
+            f"  {name}, période {key}: {len(pts_m)} points, {int(np.sum(~np.isnan(mat[:, -1])))} stations actives, "
+            f"France moyen {fr['mean'][0]} → {fr['mean'][-1]}, médian {fr['median'][0]} → {fr['median'][-1]}",
+            flush=True,
+        )
+
+    # Dernier prix connu de chaque station
+    last_idx = np.searchsorted(sid, stations, side="right") - 1
+    has = (last_idx >= 0) & (sid[np.clip(last_idx, 0, None)] == stations)
+    stations_out = {
+        "id": stations.tolist(),
+        "lat": [col.meta[i].get("lat") for i in stations.tolist()],
+        "lon": [col.meta[i].get("lon") for i in stations.tolist()],
+        "dep": deps.tolist(),
+        "ville": [col.meta[i].get("ville", "") for i in stations.tolist()],
+        "adresse": [col.meta[i].get("adresse", "") for i in stations.tolist()],
+        "prix": [round(pr[j] / 1000, 3) if h else None for j, h in zip(last_idx, has)],
+        "maj": [from_minutes(ts[j]).strftime("%Y-%m-%dT%H:%M") if h else None for j, h in zip(last_idx, has)],
+        "delta": deltas,
+    }
+
+    # Historique brut par département (chargé au clic sur une station) : temps delta-encodés
+    for d in sorted(set(deps)):
+        sel = stations[deps == d]
+        out_d = {}
+        for pid in sel.tolist():
+            a, b = np.searchsorted(sid, [pid, pid + 1])
+            if a == b:
+                continue
+            t = ts[a:b]
+            out_d[str(pid)] = [np.diff(t, prepend=0).tolist(), pr[a:b].tolist()]
+        (out / "stations" / f"{d}.json").write_text(json.dumps(out_d, separators=(",", ":")))
+
+    def dump(fname, obj):
+        (out / fname).write_text(json.dumps(obj, ensure_ascii=False, separators=(",", ":")))
+
+    dump("series.json", series)
+    dump("stations.json", stations_out)
+    return {"label": name, "n_prices": int(len(ts)), "spikes": n_spikes, "low": n_low}
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default="_site/data")
@@ -404,14 +529,14 @@ def main() -> None:
     ap.add_argument("--now", help="heure de Paris, format ISO (tests)")
     ap.add_argument("--local-xml", nargs="*", help="fichiers XML locaux au lieu du téléchargement")
     ap.add_argument("--no-geojson", action="store_true")
-    ap.add_argument("--dump-events", help="enregistre les prix nettoyés et les exclusions (npz) pour l'audit")
+    ap.add_argument("--dump-events", help="fichier npz des prix nettoyés et des exclusions, pour l'audit ; {fuel} y est remplacé par le carburant")
     ap.add_argument("--snapshot", help="dossier où copier les flux téléchargés, pour que l'audit relise les mêmes")
     args = ap.parse_args()
 
     now = datetime.fromisoformat(args.now) if args.now else datetime.now(PARIS).replace(tzinfo=None)
     now = now.replace(second=0, microsecond=0)
     out = Path(args.out)
-    (out / "stations").mkdir(parents=True, exist_ok=True)
+    out.mkdir(parents=True, exist_ok=True)
     cache = Path(args.cache)
 
     if args.snapshot:
@@ -445,11 +570,13 @@ def main() -> None:
             col.read(xml_from_zip(data), HISTORY_START, name, current=current, snapshot=name.startswith("instantane"))
             sources.append(name)
 
-    sid, ts, pr = col.arrays()
-    ts_max = int(ts.max()) if len(ts) else minutes(now)
-    # « maintenant » = dernier prix reçu (évite un point futur si le flux a du retard)
+    arrays = {k: col.arrays(k) for k in FUELS}
+    ts_max = max((int(a[1].max()) for a in arrays.values() if len(a[1])), default=minutes(now))
+    # « maintenant » = dernier prix reçu, tous carburants confondus (évite un point futur si le flux a du retard).
+    # Les périodes sont communes à tous les carburants.
     now = min(now, from_minutes(ts_max)).replace(second=0)
-    print(f"{len(ts)} prix gazole retenus, dernier à {from_minutes(ts_max)}", flush=True)
+    for k, a in arrays.items():
+        print(f"{len(a[1])} prix {FUELS[k][2]} retenus, dernier à {from_minutes(int(a[1].max())) if len(a[1]) else '–'}", flush=True)
 
     # Stations de métropole (le département vient du code postal ; les coordonnées ne servent qu'à la carte)
     stations, deps = [], []
@@ -461,83 +588,14 @@ def main() -> None:
     order = np.argsort(stations)
     stations = np.asarray(stations, dtype=np.int64)[order]
     deps = np.asarray(deps)[order]
-    regs = np.asarray([DEP_TO_REG[d] for d in deps])
-
-    # Ne garder que les événements des stations retenues
-    keep = np.isin(sid, stations)
-    sid, ts, pr = sid[keep], ts[keep], pr[keep]
-
-    # Fautes de saisie : prix corrigés ensuite, puis prix trop bas, puis à nouveau prix corrigés
-    # (une faute peut en cacher une autre : 2,159 € → 1,555 € → 2,555 € → 2,155 €)
-    keep = drop_spikes(sid, ts, pr)
-    n_spikes = int(np.sum(~keep))
-    sid, ts, pr = sid[keep], ts[keep], pr[keep]
-    keep = drop_low_outliers(sid, ts, pr, stations, now)
-    n_low = int(np.sum(~keep))
-    sid, ts, pr = sid[keep], ts[keep], pr[keep]
-    keep = drop_spikes(sid, ts, pr)
-    n_spikes += int(np.sum(~keep))
-    sid, ts, pr = sid[keep], ts[keep], pr[keep]
-    print(f"Fautes de saisie écartées : {n_spikes} prix corrigés ensuite, {n_low} prix anormalement bas", flush=True)
-
-    # Ruptures et fermetures
-    excl, excl_stats = exclusion_intervals(col, sid, ts, stations, minutes(now))
-    print(f"Intervalles d'exclusion : {dict(excl_stats)}", flush=True)
-    if args.dump_events:
-        np.savez_compressed(
-            args.dump_events, sid=sid, ts=ts, pr=pr, stations=stations, deps=deps,
-            excl_rows=excl[0], excl_starts=excl[1], excl_ends=excl[2],
-            now=minutes(now),
-            stats=json.dumps({"spikes": n_spikes, "low": n_low, "excl": dict(excl_stats), "sources": sources}),
-        )
 
     pers = periods(now)
-    series: dict = {}
-    deltas: dict = {}
-    for key, p in pers.items():
-        pts_m = np.asarray([minutes(t) for t in p["points"]], dtype=np.int64)
-        mat = price_matrix(sid, ts, pr, stations, pts_m, excl)
-        s = {"FR": aggregate(mat)}
-        for r in REGIONS:
-            s[f"R{r}"] = aggregate(mat[regs == r])
-        for d in sorted(set(deps)):
-            s[f"D{d}"] = aggregate(mat[deps == d])
-        series[key] = s
-        delta = (mat[:, -1] - mat[:, 0]) * 100  # c€/L
-        deltas[key] = [None if np.isnan(x) else round(float(x), 1) for x in delta]
-        fr = s["FR"]
-        print(
-            f"  période {key}: {len(pts_m)} points, {int(np.sum(~np.isnan(mat[:, -1])))} stations actives, "
-            f"France moyen {fr['mean'][0]} → {fr['mean'][-1]}, médian {fr['median'][0]} → {fr['median'][-1]}",
-            flush=True,
-        )
-
-    # Dernier prix connu de chaque station
-    last_idx = np.searchsorted(sid, stations, side="right") - 1
-    has = (last_idx >= 0) & (sid[np.clip(last_idx, 0, None)] == stations)
-    stations_out = {
-        "id": stations.tolist(),
-        "lat": [col.meta[i].get("lat") for i in stations.tolist()],
-        "lon": [col.meta[i].get("lon") for i in stations.tolist()],
-        "dep": deps.tolist(),
-        "ville": [col.meta[i].get("ville", "") for i in stations.tolist()],
-        "adresse": [col.meta[i].get("adresse", "") for i in stations.tolist()],
-        "prix": [round(pr[j] / 1000, 3) if h else None for j, h in zip(last_idx, has)],
-        "maj": [from_minutes(ts[j]).strftime("%Y-%m-%dT%H:%M") if h else None for j, h in zip(last_idx, has)],
-        "delta": deltas,
-    }
-
-    # Historique brut par département (chargé au clic sur une station) : temps delta-encodés
-    for d in sorted(set(deps)):
-        sel = stations[deps == d]
-        out_d = {}
-        for pid in sel.tolist():
-            a, b = np.searchsorted(sid, [pid, pid + 1])
-            if a == b:
-                continue
-            t = ts[a:b]
-            out_d[str(pid)] = [np.diff(t, prepend=0).tolist(), pr[a:b].tolist()]
-        (out / "stations" / f"{d}.json").write_text(json.dumps(out_d, separators=(",", ":")))
+    fuels_meta = {}
+    for fuel in FUELS:
+        print(f"=== {FUELS[fuel][2]}", flush=True)
+        sid, ts, pr = arrays.pop(fuel)
+        dump_path = args.dump_events.replace("{fuel}", fuel) if args.dump_events else None
+        fuels_meta[fuel] = build_fuel(col, fuel, sid, ts, pr, stations, deps, now, pers, out / fuel, dump_path, sources)
 
     meta = {
         "generated_at": datetime.now(PARIS).strftime("%Y-%m-%dT%H:%M"),
@@ -550,14 +608,9 @@ def main() -> None:
         },
         "dep_to_reg": {d: DEP_TO_REG[d] for d in sorted(set(deps))},
         "n_stations": len(stations),
+        "fuels": fuels_meta,
     }
-
-    def dump(name, obj):
-        (out / name).write_text(json.dumps(obj, ensure_ascii=False, separators=(",", ":")))
-
-    dump("meta.json", meta)
-    dump("series.json", series)
-    dump("stations.json", stations_out)
+    (out / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, separators=(",", ":")))
 
     if not args.no_geojson:
         for kind in ("regions", "departements"):

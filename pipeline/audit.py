@@ -1,4 +1,4 @@
-"""Audit de la qualité des données gazole, à lancer après « build.py --dump-events --snapshot » (GitHub Actions).
+"""Audit de la qualité des données d'un carburant, à lancer après « build.py --dump-events --snapshot » (GitHub Actions).
 
 Le script relit les flux bruts et refait toute la chaîne de calcul avec une implémentation
 indépendante et volontairement simple (boucles Python plutôt que calcul vectoriel) : lecture,
@@ -7,7 +7,7 @@ agrégats par zone. Il compare le résultat aux fichiers publiés par build.py, 
 officiel de data.economie.gouv.fr et aux prix hebdomadaires publiés par le ministère (DGEC).
 Le rapport Markdown est écrit sur la sortie standard, la progression sur la sortie d'erreur.
 
-Usage : python pipeline/audit.py --data _site/data --cache .cache --events events.npz --snapshot flux
+Usage : python pipeline/audit.py --fuel gazole --data _site/data --cache .cache --events events-gazole.npz --snapshot flux
 """
 
 from __future__ import annotations
@@ -58,6 +58,11 @@ DGEC = {
     "2026-08-28": 2.2085, "2026-09-18": 2.383, "2026-09-25": 2.371, "2026-10-02": 2.356,
     "2026-10-16": 2.3458, "2026-10-23": 2.3515,
 }
+
+# Carburant audité (--fuel) : nom et identifiant dans les flux, libellé, préfixe des colonnes de l'export officiel
+FUEL = "gazole"
+XML_NAME, XML_ID, LABEL = B.FUELS[FUEL]
+API_PREFIX = {"gazole": "gazole", "e10": "e10", "sp98": "sp98", "sp95": "sp95", "e85": "e85", "gplc": "gplc"}
 
 LINES: list[str] = []
 CHECKS: list[tuple[str, str]] = []
@@ -155,6 +160,15 @@ def dep_from_cp(cp):
 METRO = {f"{i:02d}" for i in range(1, 96) if i != 20} | {"2A", "2B"}
 
 
+def is_fuel(el):
+    """Balise <prix> ou <rupture> du carburant audité (par son nom, à défaut par son identifiant si le nom
+    n'est pas celui d'un autre carburant)."""
+    nom = el.get("nom")
+    if nom:
+        return nom == XML_NAME
+    return el.get("id") == XML_ID
+
+
 class Raw:
     """Lecture brute de tous les flux, en gardant la trace de tout ce qui est rejeté."""
 
@@ -167,7 +181,7 @@ class Raw:
         self.fuel_names = Counter()
         self.rupt = []  # (station, début, fin | None, type, en cours d'après le flux instantané)
         self.ferm = []  # (station, type, début, fin | None)
-        self.priced_now = set()  # stations affichant un prix gazole dans le flux instantané
+        self.priced_now = set()  # stations affichant un prix du carburant dans le flux instantané
         self.snapshot_read = False
 
     def read(self, stream, label, current=False, snapshot=False):
@@ -199,9 +213,9 @@ class Raw:
                     m[tag] = t.strip()
             for pr in el.iter("prix"):
                 self.fuel_names[(pr.get("id"), pr.get("nom"))] += 1
-                if pr.get("nom") != "Gazole" and pr.get("id") != "1":
+                if not is_fuel(pr):
                     continue
-                s["gazole"] += 1
+                s["gazole"] += 1  # clé historique : prix du carburant audité
                 d, v = parse_dt(pr.get("maj")), parse_val(pr.get("valeur"))
                 if d is None or v is None:
                     k = "date illisible" if d is None else "prix illisible"
@@ -224,7 +238,7 @@ class Raw:
                 self.ev.append((pid, t, v))
             for r in el.iter("rupture"):
                 s["ruptures"] += 1
-                if r.get("nom") != "Gazole" and r.get("id") != "1":
+                if not is_fuel(r):
                     continue
                 s["ruptures gazole"] += 1
                 d, f = parse_dt(r.get("debut")), parse_dt(r.get("fin"))
@@ -309,7 +323,7 @@ def daily_medians(by_station, day0, now_m):
 
 
 def build_intervals(R, clean, station_dep, now_m):
-    """Intervalles [début, fin) sans vente de gazole, d'après les ruptures et fermetures des flux."""
+    """Intervalles [début, fin) sans vente du carburant, d'après les ruptures et fermetures des flux."""
     times = {pid: [t for t, _ in evs] for pid, evs in clean.items()}
 
     def next_after(pid, t):
@@ -425,7 +439,7 @@ def run(title, fn, C):
 
 def s_lecture(C):
     R = C.R
-    p("| Source | Stations | Prix gazole | Avant déc. 2024 | Date illisible | Prix illisible | Date future | < 1 € | > 3 € | Ruptures gazole (sans fin) | Fermetures datées |")
+    p(f"| Source | Stations | Prix {LABEL} | Avant déc. 2024 | Date illisible | Prix illisible | Date future | < 1 € | > 3 € | Ruptures {LABEL} (sans fin) | Fermetures datées |")
     p("|---|---|---|---|---|---|---|---|---|---|---|")
     tot = Counter()
     for k, s in R.src.items():
@@ -437,12 +451,12 @@ def s_lecture(C):
     for k, rows in R.examples.items():
         p(f"- {k} : {len(rows)} cas, par exemple {rows[:5]}")
     bad = sum(tot[k] for k in ("date illisible", "prix illisible", "date future", "< 1 €", "> 3 €"))
-    check(bad == 0, f"Lecture des flux : {nf(sum(s['gazole'] for s in R.src.values()))} prix gazole lus, {bad} date ou prix illisible, futur ou hors de la plage 1–3 €.")
+    check(bad == 0, f"Lecture des flux : {nf(sum(s['gazole'] for s in R.src.values()))} prix {LABEL} lus, {bad} date ou prix illisible, futur ou hors de la plage 1–3 €.")
 
 
 def s_nettoyage(C):
     R = C.R
-    p(f"- Prix gazole lus après novembre 2024 : {nf(C.n_ev)} ; hors plage 1–3 € écartés : {C.n_out}.")
+    p(f"- Prix {LABEL} lus après novembre 2024 : {nf(C.n_ev)} ; hors plage 1–3 € écartés : {C.n_out}.")
     p(f"- Doublons exacts (même station, même horodatage) supprimés : {nf(C.n_dup)}, dont {C.n_conf} avec des prix différents (le dernier lu est gardé).")
     # stations
     st_ids = C.st_ids
@@ -458,7 +472,7 @@ def s_nettoyage(C):
         k = "outre-mer" if cp.startswith(("97", "98")) else f"code postal invalide ({cp!r})"
         reasons[k] += 1
         ex[k].append(pid)
-    p(f"- Stations avec des prix gazole mais hors périmètre : {sum(reasons.values())} {dict(reasons)}.")
+    p(f"- Stations avec des prix {LABEL} mais hors périmètre : {sum(reasons.values())} {dict(reasons)}.")
     no_coord = [i for i, la in zip(st_ids, C.js["lat"]) if la is None]
     act_last = {pid for pid in st_ids if C.full.at(pid, C.now_m) is not None}
     p(f"- Stations sans coordonnées valides (comptées dans les statistiques, absentes de la carte) : {len(no_coord)}, dont {len(set(no_coord) & act_last)} actives au dernier point : "
@@ -686,9 +700,9 @@ def s_ruptures(C):
     would = {pid for pid in cur_sel if C.typo_only.at(pid, C.now_m) is not None}
     still = {pid for pid in cur_sel if C.full.at(pid, C.now_m) is not None}
     types = Counter(t for pid, _d, _f, t, c in R.rupt if c and pid in cur_sel)
-    p(f"- Ruptures de gazole en cours (flux instantané) : {len(cur_sel)} stations de métropole {dict(types)} ; "
+    p(f"- Ruptures de {LABEL} en cours (flux instantané) : {len(cur_sel)} stations de métropole {dict(types)} ; "
       f"{len(would)} auraient été comptées avec leur dernier prix ; encore comptées après correction : {len(still)}.")
-    check(not still, f"Stations en rupture de gazole en ce moment : {len(cur_sel)}, toutes exclues du dernier point ({len(would)} étaient comptées avec leur ancien prix avant correction).")
+    check(not still, f"Stations en rupture de {LABEL} en ce moment : {len(cur_sel)}, toutes exclues du dernier point ({len(would)} étaient comptées avec leur ancien prix avant correction).")
     # prix publiés pendant une période d'exclusion (incohérences des flux)
     n_in = Counter()
     st_in = defaultdict(set)
@@ -730,7 +744,7 @@ def s_ruptures(C):
     n0, md0, mn0 = agg(v_without)
     n1, md1, mn1 = agg(v_with)
     ruptured_open = sum(1 for pid in gone if any(k.startswith("rupture") and e == C.now_m for s, e, k in C.intervals[pid]))
-    p(f"- Dernier point : {len(gone)} stations avec un prix de moins de 30 jours n'affichent pas de prix gazole dans le flux instantané (dont {ruptured_open} avec une rupture sans date de fin dans les flux de la veille) ; "
+    p(f"- Dernier point : {len(gone)} stations avec un prix de moins de 30 jours n'affichent pas de prix {LABEL} dans le flux instantané (dont {ruptured_open} avec une rupture sans date de fin dans les flux de la veille) ; "
       f"elles ne sont pas comptées. Sans cette règle : {nf(n0)} stations, médiane {fr(md0)}, moyenne {fr(mn0)} ; avec : {nf(n1)}, {fr(md1)}, {fr(mn1)}.")
     long_ = Counter(k for lst in C.intervals.values() for s, e, k in lst if e < INF and e - s > 30 * DAY)
     p(f"- Périodes d'exclusion terminées de plus de 30 jours : {dict(long_)} ; sans fin connue (en cours) : {dict(Counter(k for lst in C.intervals.values() for s, e, k in lst if e >= INF))}.")
@@ -797,7 +811,8 @@ def s_api(C):
     rows = list(csv.DictReader(io.StringIO(raw), delimiter=";"))
     cols = list(rows[0].keys()) if rows else []
     col = {c.lower(): c for c in cols}
-    p(f"- {len(rows)} lignes ; colonnes gazole : {[c for c in cols if 'gazole' in c.lower()]}")
+    pre = API_PREFIX[FUEL]
+    p(f"- {len(rows)} lignes ; colonnes {LABEL} : {[c for c in cols if c.lower().startswith(pre + '_')]}")
     def api_dt(s):
         # L'export affiche l'heure du flux (heure de Paris) suivie de « +00:00 » : on garde l'heure telle quelle.
         try:
@@ -807,13 +822,13 @@ def s_api(C):
 
     api = {}
     for r in rows:
-        v = r.get(col["gazole_prix"])
+        v = r.get(col[f"{pre}_prix"])
         if not v:
             continue
-        api[int(r[col["id"]])] = (r[col.get("cp", col.get("code_postal", "cp"))], float(v), api_dt(r[col["gazole_maj"]]))
-    p(f"- Format des dates de l'API : {[r[col['gazole_maj']] for r in rows[:2]]}")
-    both = [int(r[col["id"]]) for r in rows if r.get(col["gazole_prix"]) and r.get(col.get("gazole_rupture_debut", ""), "")]
-    p(f"- Lignes de l'API avec à la fois un prix et une rupture de gazole : {len(both)} ; exemples {both[:6]}")
+        api[int(r[col["id"]])] = (r[col.get("cp", col.get("code_postal", "cp"))], float(v), api_dt(r[col[f"{pre}_maj"]]))
+    p(f"- Format des dates de l'API : {[r[col[f'{pre}_maj']] for r in rows[:2]]}")
+    both = [int(r[col["id"]]) for r in rows if r.get(col[f"{pre}_prix"]) and r.get(col.get(f"{pre}_rupture_debut", ""), "")]
+    p(f"- Lignes de l'API avec à la fois un prix et une rupture de {LABEL} : {len(both)} ; exemples {both[:6]}")
     known = set(C.st_ids)
     common = [i for i in api if i in known and C.clean.get(i)]
     raw_last = {}
@@ -832,7 +847,7 @@ def s_api(C):
             timing.append((i, api[i][1], str(api[i][2]), v / 1000, ts_txt(t)))
         else:
             other.append((i, api[i][1], str(api[i][2]), v / 1000, ts_txt(t)))
-    p(f"- Stations avec un prix gazole dans l'API : {nf(len(api))} ; présentes chez nous : {nf(len(common))} ; même prix à la même minute : {nf(same)} ; "
+    p(f"- Stations avec un prix {LABEL} dans l'API : {nf(len(api))} ; présentes chez nous : {nf(len(common))} ; même prix à la même minute : {nf(same)} ; "
       f"faute de saisie écartée chez nous mais affichée par l'API : {len(typo)} {typo[:8]} ; mises à jour différentes (l'une des deux sources est plus récente) : {len(timing)} ; même mise à jour mais prix différent : {len(other)}.")
     for d in (other + timing)[:10]:
         p(f"  - {d}")
@@ -849,7 +864,7 @@ def s_api(C):
     why = Counter()
     for i in only_us:
         if i not in api:
-            why["sans prix gazole dans l'API"] += 1
+            why[f"sans prix {LABEL} dans l'API"] += 1
         else:
             why["prix de plus de 30 jours ou hors plage dans l'API"] += 1
     p(f"- Stations comptées chez nous mais pas dans l'API : {dict(why)} ; exemples : {[(i, C.R.meta.get(i, {}).get('ville'), ts_txt(C.full.t[i][-1])) for i in only_us[:6]]}")
@@ -860,6 +875,9 @@ def s_api(C):
 
 
 def s_dgec(C):
+    if FUEL != "gazole":
+        p(f"Pas de série hebdomadaire DGEC intégrée à l'audit pour le {LABEL} : comparaison non faite.")
+        return
     p("Prix publiés par la DGEC (pondérés par les réseaux, relevés le vendredi) comparés à nos valeurs non pondérées, à 12 h le vendredi :")
     p()
     p("| Vendredi | DGEC | Notre moyenne | Écart | Notre médiane | Écart | Moyenne à 0 h / samedi 0 h |")
@@ -886,19 +904,22 @@ def s_dgec(C):
 def s_complements(C):
     pts = C.meta["periods"]["fev26"]["points"]
     rows = C.vals["fev26"]
+    last = [v for v in rows[-1] if v is not None]
+    cap = Counter(last).most_common(1)[0][0] if last else 2250  # prix le plus fréquent (2,250 € pour le gazole)
+    cap_txt = fr(cap / 1000)
     share = []
     for k in range(0, len(pts), 7):
         xs = [v for v in rows[k] if v is not None]
-        share.append(f"{pts[k][:10]} {pct(sum(v == 2250 for v in xs), len(xs))}")
+        share.append(f"{pts[k][:10]} {pct(sum(v == cap for v in xs), len(xs))}")
     xs = [v for v in rows[-1] if v is not None]
     top = Counter(xs).most_common(6)
     p(f"- Prix les plus fréquents au dernier point (prix, nombre de stations) : {[(v / 1000, n) for v, n in top]}")
-    p("- Part des stations actives à exactement 2,250 € (un point par semaine) : " + ", ".join(share) + f", dernier point {pct(sum(v == 2250 for v in xs), len(xs))}.")
-    n_cap = sum(v == 2250 for v in xs)
-    below = sum(v < 2250 for v in xs)
-    p(f"- Au dernier point : {nf(below)} stations sous 2,250 €, {nf(n_cap)} à 2,250 €, {nf(len(xs) - below - n_cap)} au-dessus.")
+    p(f"- Part des stations actives à exactement {cap_txt}, prix le plus fréquent au dernier point (un point par semaine) : " + ", ".join(share) + f", dernier point {pct(sum(v == cap for v in xs), len(xs))}.")
+    n_cap = sum(v == cap for v in xs)
+    below = sum(v < cap for v in xs)
+    p(f"- Au dernier point : {nf(below)} stations sous {cap_txt}, {nf(n_cap)} à {cap_txt}, {nf(len(xs) - below - n_cap)} au-dessus.")
     if below < len(xs) / 2 <= below + n_cap:
-        check(None, f"La médiane nationale tombe dans le groupe des {nf(n_cap)} stations affichant exactement 2,250 € ({pct(n_cap, len(xs))}) : elle reste collée à ce prix tant qu'il couvre le milieu de la distribution.")
+        check(None, f"La médiane nationale tombe dans le groupe des {nf(n_cap)} stations affichant exactement {cap_txt} ({pct(n_cap, len(xs))}) : elle reste collée à ce prix tant qu'il couvre le milieu de la distribution.")
     p("- Moyennes hebdomadaires France (lundi → dimanche, moyenne des valeurs journalières à minuit) :")
     weeks = defaultdict(list)
     fr_ = C.naive["fev26"]["FR"]
@@ -915,22 +936,27 @@ def s_complements(C):
 
 def main():
     ap = argparse.ArgumentParser()
+    ap.add_argument("--fuel", default="gazole", choices=list(B.FUELS))
     ap.add_argument("--data", default="_site/data")
     ap.add_argument("--cache", default=".cache")
     ap.add_argument("--events", required=True, help="fichier npz écrit par build.py --dump-events")
     ap.add_argument("--snapshot", help="dossier des flux copiés par build.py --snapshot")
     ap.add_argument("--local-xml", nargs="*", help="fichiers XML locaux (tests)")
     args = ap.parse_args()
+    global FUEL, XML_NAME, XML_ID, LABEL
+    FUEL = args.fuel
+    XML_NAME, XML_ID, LABEL = B.FUELS[FUEL]
     if args.snapshot:
         B.SNAPSHOT = Path(args.snapshot)
     C = SimpleNamespace()
     C.data = data = Path(args.data)
     cache = Path(args.cache)
     C.meta = json.loads((data / "meta.json").read_text())
-    C.series = json.loads((data / "series.json").read_text())
-    C.js = json.loads((data / "stations.json").read_text())
+    C.series = json.loads((data / FUEL / "series.json").read_text())
+    C.js = json.loads((data / FUEL / "stations.json").read_text())
     C.npz = np.load(args.events)
     C.build_stats = json.loads(str(C.npz["stats"]))
+    assert C.build_stats.get("fuel", FUEL) == FUEL, (C.build_stats.get("fuel"), FUEL)
     C.npz_stations = C.npz["stations"]
     C.now_m = int(C.npz["now"])
     C.st_ids = [int(x) for x in C.js["id"]]
@@ -1021,7 +1047,7 @@ def main():
     ):
         run(title, fn, C)
 
-    print("# Audit des données gazole")
+    print(f"# Audit des données {LABEL}")
     print(f"Données jusqu'au {C.meta['data_until']}, calculées le {C.meta['generated_at']}, audit du {datetime.now(B.PARIS).strftime('%Y-%m-%dT%H:%M')}.")
     print()
     print("## Synthèse des contrôles")
