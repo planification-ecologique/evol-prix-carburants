@@ -10,7 +10,7 @@ Toutes les dates du flux sont en heure de Paris : on travaille en heure locale
 « naïve », convertie en minutes depuis 1970.
 
 Sorties : data/meta.json (commun), puis pour chaque carburant data/<carburant>/series.json (agrégats par zone),
-stations.json (stations, dernier prix) et prix-jour.bin.gz, prix-heure.bin.gz (prix de chaque station à chaque point).
+stations.json (stations, dernier prix) et prix-jour.bin, prix-heure.bin (prix de chaque station à chaque point).
 
 Usage : python pipeline/build.py --out _site/data [--cache .cache] [--now 2026-11-02T14:00]
         python pipeline/build.py --local-xml fichier1.xml ... (tests, sans réseau)
@@ -398,14 +398,17 @@ def write_matrix(path: Path, mat) -> None:
 
     Format : entiers 16 bits signés, petit-boutiste, ligne par ligne (un point = une ligne de toutes les stations,
     dans l'ordre de stations.json). La première ligne contient les prix ; chaque ligne suivante contient l'écart
-    avec la ligne précédente (presque toujours 0, d'où une très bonne compression gzip).
+    avec la ligne précédente (presque toujours 0, d'où une très bonne compression). Compression « deflate » brute
+    (zlib sans en-tête), lue dans la page par DecompressionStream("deflate-raw") : pas de fichier .gz, que
+    certains pare-feu d'entreprise bloquent.
     """
     m = np.where(np.isnan(mat), 0, np.rint(mat * 1000)).astype(np.int32).T  # points × stations
     d = np.diff(m, axis=0, prepend=np.zeros((1, m.shape[1]), np.int32))
     assert np.abs(d).max(initial=0) < 32768
-    import gzip
+    import zlib
 
-    path.write_bytes(gzip.compress(d.astype("<i2").tobytes(), compresslevel=9, mtime=0))
+    c = zlib.compressobj(9, zlib.DEFLATED, -15)
+    path.write_bytes(c.compress(d.astype("<i2").tobytes()) + c.flush())
 
 
 def price_matrix(sid, ts, pr, stations, points_m, excl=None):
@@ -498,7 +501,7 @@ def build_fuel(col, fuel, sid, ts, pr, stations, deps, now, pers, out: Path, dum
         for d in sorted(set(deps)):
             s[f"D{d}"] = aggregate(mat[deps == d])
         series[key] = s
-        write_matrix(out / f"prix-{key}.bin.gz", mat)
+        write_matrix(out / f"prix-{key}.bin", mat)
         fr = s["FR"]
         print(
             f"  {name}, période {key}: {len(pts_m)} points, {int(np.sum(~np.isnan(mat[:, -1])))} stations actives, "

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import argparse
 import csv
-import gzip
+import zlib
 import io
 import json
 import math
@@ -546,14 +546,14 @@ def s_recalcul(C):
     # prix de chaque station à chaque point (carte, tableau des baisses, courbe d'une station)
     n_d = bad_d = 0
     for per in C.meta["periods"]:
-        raw = gzip.decompress((C.data / FUEL / f"prix-{per}.bin.gz").read_bytes())
+        raw = zlib.decompress((C.data / FUEL / f"prix-{per}.bin").read_bytes(), -15)
         pub = np.cumsum(np.frombuffer(raw, dtype="<i2").astype(np.int64).reshape(len(C.vals[per]), -1), axis=0)
         for k, row in enumerate(C.vals[per]):
             for i, v in enumerate(row):
                 n_d += 1
                 if (v or 0) != pub[k, i]:
                     bad_d += 1
-    p(f"- Prix de chaque station à chaque point (fichiers prix-*.bin.gz) : {nf(n_d)} valeurs comparées, {bad_d} différences.")
+    p(f"- Prix de chaque station à chaque point (fichiers prix-*.bin) : {nf(n_d)} valeurs comparées, {bad_d} différences.")
     check(bad_d == 0, f"Prix de chaque station à chaque point (carte, tableau des baisses, courbe d'une station) : identiques au recalcul ({nf(n_d)} valeurs).")
     # dernier prix publié par station
     bad_p = 0

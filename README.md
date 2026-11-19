@@ -10,7 +10,7 @@ Page web qui montre l'évolution du prix du gazole, du SP95-E10 et du SP98 dans 
 
 ## Fonctionnement
 
-- `pipeline/build.py` télécharge les flux XML (archives annuelles, année en cours, jours récents, flux instantané). Il en extrait les prix de chaque carburant suivi (liste `FUELS`), puis calcule des fichiers JSON statiques : `_site/data/meta.json` (commun) et, dans `_site/data/<carburant>/`, les agrégats par zone sur deux grilles, chaque jour à minuit depuis 2025 et chaque heure sur 3 jours (`series.json`), la liste des stations avec leur dernier prix (`stations.json`), et le prix de chaque station à chaque point (`prix-jour.bin.gz`, `prix-heure.bin.gz`, entiers 16 bits compressés). La page découpe dans ces grilles la période choisie.
+- `pipeline/build.py` télécharge les flux XML (archives annuelles, année en cours, jours récents, flux instantané). Il en extrait les prix de chaque carburant suivi (liste `FUELS`), puis calcule des fichiers JSON statiques : `_site/data/meta.json` (commun) et, dans `_site/data/<carburant>/`, les agrégats par zone sur deux grilles, chaque jour à minuit depuis 2025 et chaque heure sur 3 jours (`series.json`), la liste des stations avec leur dernier prix (`stations.json`), et le prix de chaque station à chaque point (`prix-jour.bin`, `prix-heure.bin`, entiers 16 bits compressés en deflate brut, sans extension .gz que certains pare-feu bloquent). La page découpe dans ces grilles la période choisie.
 - `site/` contient la page (HTML, CSS, JS sans étape de build, avec Leaflet et Chart.js chargés depuis un CDN).
 - `.github/workflows/update.yml` recalcule les données toutes les heures et publie le site sur GitHub Pages. Pour l'activer : Settings › Pages › Source : **GitHub Actions**.
 
